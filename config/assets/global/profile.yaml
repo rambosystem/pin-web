@@ -1,0 +1,34 @@
+me:
+  # 身份
+  name: Rambo Wang
+  display_name: Rambo Wang
+  email: rambo.wang@pacvue.com
+  account_id: "712020:95adf17b-c3ec-4b54-a057-2777a6a9cab2" # Jira/Atlassian
+
+  # 岗位 / 角色
+  role: Product Owner
+  job_title: Product Manager
+  # 可选: 部门、团队
+  # team: Defenders
+  # org: Pacvue
+
+  # 负责的项目（Jira project key 列表，用于默认上下文、创建单子等）
+  projects_responsible:
+    - CP
+    - PAG
+  # 未指定项目时的默认项目
+  default_project: CP
+
+  # 可选: 常用配置
+  # default_sprint: 26Q1-Sprint4-Defenders
+  # locale: zh-CN
+
+  # Confluence Workspace（REST API v2 用下面固化值，无需再解析或请求 GET /spaces）
+  confluence_workspace: "https://pacvue-enterprise.atlassian.net/wiki/spaces/~71202095adf17bc3ec4b54a0572777a6a9cab2/folder/1263042720?atlOrigin=eyJpIjoiOGE2NGZlMzg5MDE3NDQzMGJlZDFjZGNlYWJmNTgzMmEiLCJwIjoiYyJ9"
+  confluence_base_url: "https://pacvue-enterprise.atlassian.net"
+  confluence_space_key: "~71202095adf17bc3ec4b54a0572777a6a9cab2"
+  confluence_parent_id: "1263042720"
+  confluence_space_id: "32113549" # 数字 spaceId，来自 GET /spaces?keys={space_key}
+
+
+  # Lokalise

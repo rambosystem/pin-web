@@ -1,0 +1,197 @@
+{
+  "schema_version": 1,
+  "supported_work_types": [
+    "Story",
+    "Technical Story",
+    "Bug",
+    "Epic",
+    "Sub-task",
+    "Dev Bug (Sub-task)"
+  ],
+  "defaults": {
+    "client_id": "0000",
+    "assignee": {
+      "name": "Xuanyu Liu",
+      "email": "xuanyu.liu@pacvue.com",
+      "account_id": "712020:56137117-3aff-4ea4-b5b5-59aae5ad5235",
+      "role": "Dev Leader"
+    },
+    "assignee_by_work_type": {
+      "Epic": {
+        "name": "Rambo Wang",
+        "email": "rambo.wang@pacvue.com",
+        "account_id": "712020:95adf17b-c3ec-4b54-a057-2777a6a9cab2",
+        "role": "Product Owner"
+      }
+    }
+  },
+  "issue_types": {
+    "Epic": {
+      "required_fields": [
+        "Summary",
+        "Priority",
+        "Components",
+        "Delivery Quarter"
+      ],
+      "optional_fields": [
+        "Assignee",
+        "Epic Name",
+        "Epic Link",
+        "Sprint",
+        "Story Points",
+        "Feature Tier",
+        "CapEx",
+        "Description",
+        "Due date",
+        "Fix versions",
+        "Labels",
+        "Parent"
+      ],
+      "field_options": {
+        "Priority": [
+          "Critical 鈿狅笍锔?",
+          "Highest",
+          "High",
+          "Medium",
+          "Low",
+          "Lowest",
+          "4.0",
+          "3.0",
+          "2.0",
+          "1.0"
+        ],
+        "Delivery Quarter": [
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q4"
+        ],
+        "Feature Tier": [
+          "Tier 1",
+          "Tier 2",
+          "Tier 3"
+        ],
+        "CapEx": [
+          "Yes",
+          "No"
+        ]
+      },
+      "field_defaults": {}
+    },
+    "Story": {
+      "required_fields": [
+        "Summary",
+        "Priority",
+        "Components",
+        "Client ID",
+        "Story Type",
+        "UX Review Required?"
+      ],
+      "optional_fields": [
+        "Assignee",
+        "Parent",
+        "Epic Link",
+        "Sprint",
+        "Story Points",
+        "Feature Tier",
+        "Last Response Date",
+        "UX Review Status",
+        "Description",
+        "Due date",
+        "Fix versions",
+        "Labels"
+      ],
+      "field_options": {
+        "Story Type": [
+          "New Feature",
+          "Improvement",
+          "API Integration & Enablement"
+        ],
+        "UX Review Required?": [
+          "Yes",
+          "No"
+        ],
+        "UX Review Status": [
+          "Not Needed",
+          "Pending",
+          "Reviewed"
+        ],
+        "Priority": [
+          "Critical 鈿狅笍锔?",
+          "Highest",
+          "High",
+          "Medium",
+          "Low",
+          "Lowest",
+          "4.0",
+          "3.0",
+          "2.0",
+          "1.0"
+        ],
+        "Feature Tier": [
+          "Tier 1",
+          "Tier 2",
+          "Tier 3"
+        ]
+      },
+      "field_defaults": {
+        "Story Type": "Improvement",
+        "Client ID": "0000",
+        "UX Review Required?": "No",
+        "UX Review Status": "Not Needed"
+      }
+    },
+    "Technical Story": {
+      "required_fields": [
+        "Summary",
+        "Priority",
+        "Components",
+        "Client ID",
+        "Technical Story Type"
+      ],
+      "optional_fields": [
+        "Assignee",
+        "Parent",
+        "Epic Link",
+        "Sprint",
+        "Story Points",
+        "Description",
+        "Due date",
+        "Fix versions",
+        "Labels"
+      ],
+      "field_options": {
+        "Technical Story Type": [
+          "Code Quality",
+          "Architecture",
+          "Performance & Scalability",
+          "Security & Compliance",
+          "Testing & Automation",
+          "Operations & Configuration",
+          "Spike",
+          "APM Optimization",
+          "Cross-Platform Support / Integration",
+          "CS Support 鈥?Investigation",
+          "CS Support 鈥?Offline Migration",
+          "UX-Driven",
+          "Others"
+        ],
+        "Priority": [
+          "Critical 鈿狅笍锔?",
+          "Highest",
+          "High",
+          "Medium",
+          "Low",
+          "Lowest",
+          "4.0",
+          "3.0",
+          "2.0",
+          "1.0"
+        ]
+      },
+      "field_defaults": {
+        "Client ID": "0000"
+      }
+    }
+  }
+}

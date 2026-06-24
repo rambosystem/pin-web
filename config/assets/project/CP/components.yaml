@@ -1,0 +1,73 @@
+# CP project components. Source: get_createmeta.py CP --options (Components allowedValues).
+# Referenced by team.yaml (workspace.ownership.components_file). Used by query-templates, create-story, create-technical-story, create-epic, sprint-report, generate-release-note.
+# Version per component: see component-versions.yaml (component_versions).
+Defenders components:
+  - name: Bid Explorer
+  - name: Budget Scheduler
+  - name: Calendar Center
+  - name: Company Board
+  - name: Dayparting Scheduler
+  - name: Download Center
+  - name: Message
+  - name: My Report
+  - name: Product Line
+  - name: SOV
+
+components:
+  - name: Account&Role
+  - name: Activity Analysis
+  - name: Admin
+  - name: Agency Center
+  - name: AI
+  - name: All
+  - name: Anomaly Alert
+  - name: Asset Mapping
+  - name: Audit
+  - name: Automation Health
+  - name: Automation Priority
+  - name: Automation Value
+  - name: Bid Explorer
+  - name: Budget Manager
+  - name: Budget Plan
+  - name: Budget Scheduler
+  - name: Calendar Center
+  - name: Campaign AI
+  - name: Campaign Mapping
+  - name: Company Board
+  - name: Creative Management
+  - name: Cross Retailer Dashboard
+  - name: Cross Retailer Share Tag
+  - name: Custom Dashboard
+  - name: Custom Metric
+  - name: Dayparting Scheduler
+  - name: default report
+  - name: Download Center
+  - name: Event
+  - name: Executive Hub
+  - name: Home
+  - name: Incremental Integration
+  - name: Incrementality console
+  - name: Keyword Opportunity
+  - name: Message
+  - name: My Report
+  - name: Other
+  - name: Pacvue Copilot
+  - name: Product Line
+  - name: Pacvue MCP
+  - name: Product AI
+  - name: Rule
+  - name: SOV
+  - name: Super Wizard
+  - name: Tag
+  - name: Top Bar
+  - name: Unified Data
+  - name: User Feedback
+  - name: User Management
+
+Component Aliases:
+  - name: Pacvue Agent
+    alias: [Copilot]
+  - name: Creative Management
+    alias: [Creative Hub]
+  - name: Company Board
+    alias: [Global Report]
