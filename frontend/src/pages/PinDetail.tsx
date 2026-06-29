@@ -3,7 +3,9 @@ import { createPortal } from "react-dom";
 import { Link, useParams } from "react-router-dom";
 import {
   ArrowLeft,
+  Check,
   ChevronDown,
+  Copy,
   ExternalLink,
   FileText,
   Paperclip,
@@ -66,6 +68,7 @@ export function PinDetail() {
   const [assigneeSearchBusy, setAssigneeSearchBusy] = useState(false);
   const [assigneeSaving, setAssigneeSaving] = useState(false);
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const [translationVersion, setTranslationVersion] = useState(0);
 
@@ -233,6 +236,29 @@ export function PinDetail() {
     }
   }
 
+  async function copyAnalysisJson() {
+    if (!analysis) return;
+    const payload = {
+      key,
+      module: labels?.module ?? "",
+      nature: labels?.nature ?? "",
+      form_request: analysis.form_request,
+      background: analysis.background,
+      problem: analysis.problem,
+      expectation: analysis.expectation,
+      impact: analysis.impact,
+    };
+    const json = JSON.stringify(payload, null, 2);
+    try {
+      await navigator.clipboard.writeText(json);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+      toast.success("Analysis JSON copied");
+    } catch {
+      toast.error("Copy failed — clipboard unavailable");
+    }
+  }
+
   if (loading && !data) {
     return (
       <div className="space-y-4">
@@ -329,13 +355,9 @@ export function PinDetail() {
                           className="w-full flex items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent hover:text-accent-foreground focus:outline-none"
                           onClick={() => void applyAssignee(u)}
                         >
-                          {u.avatar_url ? (
-                            <img src={u.avatar_url} alt="" className="h-5 w-5 rounded-full shrink-0" />
-                          ) : (
-                            <div className="h-5 w-5 shrink-0 rounded-full bg-muted text-[9px] font-medium flex items-center justify-center">
-                              {initials(u.display_name)}
-                            </div>
-                          )}
+                          <div className="h-5 w-5 shrink-0 rounded-full bg-muted text-[9px] font-medium flex items-center justify-center">
+                            {initials(u.display_name)}
+                          </div>
                           <div className="min-w-0">
                             <div className="truncate font-medium">{u.display_name}</div>
                             {u.email && <div className="truncate text-xs text-muted-foreground">{u.email}</div>}
@@ -576,8 +598,24 @@ export function PinDetail() {
         </section>
 
         <section className="space-y-4 min-w-0">
-          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            LLM Analysis
+          <div className="flex items-center gap-2">
+            <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              LLM Analysis
+            </div>
+            {analysis && Object.values(analysis).some((v) => v.trim()) && (
+              <button
+                type="button"
+                onClick={() => void copyAnalysisJson()}
+                title="Copy analysis as JSON"
+                className="inline-flex items-center justify-center h-6 w-6 rounded text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
+              >
+                {copied ? (
+                  <Check className="h-3.5 w-3.5 text-green-600" />
+                ) : (
+                  <Copy className="h-3.5 w-3.5" />
+                )}
+              </button>
+            )}
           </div>
           <AnalysisEditor
             pinKey={data.key}
