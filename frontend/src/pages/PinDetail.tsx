@@ -42,6 +42,34 @@ import { TranslatedText } from "@/components/TranslatedText";
 import { formatFileSize } from "@/lib/utils";
 import { usePinDetail } from "@/hooks/usePinDetail";
 
+async function copyText(text: string): Promise<boolean> {
+  // Clipboard API only works in a secure context (https / localhost). When the
+  // app is served over plain HTTP, navigator.clipboard is undefined — fall back
+  // to the legacy execCommand path below.
+  if (window.isSecureContext && navigator.clipboard) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // fall through
+    }
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
   if (!parts.length) return "?";
@@ -249,12 +277,11 @@ export function PinDetail() {
       impact: analysis.impact,
     };
     const json = JSON.stringify(payload, null, 2);
-    try {
-      await navigator.clipboard.writeText(json);
+    if (await copyText(json)) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
       toast.success("Analysis JSON copied");
-    } catch {
+    } else {
       toast.error("Copy failed — clipboard unavailable");
     }
   }
