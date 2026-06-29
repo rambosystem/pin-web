@@ -347,7 +347,6 @@ export function PinDetail() {
                 )}
               </PopoverContent>
             </Popover>
-            <StatusBadge label={data.status} />
             <StatusBadge label={data.urgency} kind="urgency" />
             <a
               href={data.jira_url}
@@ -379,10 +378,17 @@ export function PinDetail() {
                 variant="outline"
                 size="sm"
                 disabled={transitioning}
-                className="gap-1.5"
+                className="gap-1.5 max-w-[240px]"
+                title="Change status"
               >
-                <span className="text-muted-foreground text-xs">Status</span>
-                <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+                {data.status ? (
+                  <span className="truncate text-sm text-foreground">
+                    {data.status}
+                  </span>
+                ) : (
+                  <span className="text-xs text-muted-foreground">—</span>
+                )}
+                <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
               </Button>
             </PopoverTrigger>
             <PopoverContent align="end" className="w-56 p-1">

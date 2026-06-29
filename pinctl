@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# Manage the PIN web server (systemd unit: pin-web).
+#
+# Usage:
+#   ./pinctl start            # start the service
+#   ./pinctl stop             # stop the service
+#   ./pinctl restart          # restart the service
+#   ./pinctl build            # rebuild frontend, then restart
+#   ./pinctl status           # show service status
+#   ./pinctl logs             # follow logs (Ctrl+C to quit)
+#   ./pinctl enable|disable   # toggle start-on-boot
+#   ./pinctl install          # (re)install the unit file from deploy/
+
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SERVICE="pin-web"
+UNIT_SRC="$REPO_DIR/deploy/pin-web.service"
+UNIT_DST="/etc/systemd/system/pin-web.service"
+LOG_FILE="$REPO_DIR/cache/pin-web.log"
+
+log() { printf '[pinctl] %s\n' "$*"; }
+err() { printf '[pinctl][error] %s\n' "$*" >&2; }
+
+build_frontend() {
+  log "building frontend…"
+  ( cd "$REPO_DIR/frontend" && npm run build )
+}
+
+cmd="${1:-}"
+case "$cmd" in
+  start)
+    sudo systemctl start "$SERVICE"
+    sudo systemctl --no-pager --full status "$SERVICE" | head -8
+    ;;
+  stop)
+    sudo systemctl stop "$SERVICE"
+    log "stopped."
+    ;;
+  restart)
+    sudo systemctl restart "$SERVICE"
+    sudo systemctl --no-pager --full status "$SERVICE" | head -8
+    ;;
+  build)
+    build_frontend
+    sudo systemctl restart "$SERVICE"
+    log "rebuilt + restarted."
+    sudo systemctl --no-pager --full status "$SERVICE" | head -8
+    ;;
+  status)
+    sudo systemctl --no-pager --full status "$SERVICE"
+    ;;
+  logs)
+    if [[ -f "$LOG_FILE" ]]; then
+      tail -n 100 -f "$LOG_FILE"
+    else
+      journalctl -u "$SERVICE" -n 100 -f
+    fi
+    ;;
+  enable)
+    sudo systemctl enable "$SERVICE"
+    log "enabled on boot."
+    ;;
+  disable)
+    sudo systemctl disable "$SERVICE"
+    log "disabled on boot."
+    ;;
+  install)
+    [[ -f "$UNIT_SRC" ]] || { err "unit source not found: $UNIT_SRC"; exit 1; }
+    sudo cp "$UNIT_SRC" "$UNIT_DST"
+    sudo systemctl daemon-reload
+    sudo systemctl enable "$SERVICE"
+    sudo systemctl restart "$SERVICE"
+    log "installed + (re)started."
+    ;;
+  ""|-h|--help|help)
+    sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    ;;
+  *)
+    err "unknown command: $cmd (try: ./pinctl help)"
+    exit 1
+    ;;
+esac
