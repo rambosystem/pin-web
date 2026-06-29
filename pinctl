@@ -23,8 +23,10 @@ log() { printf '[pinctl] %s\n' "$*"; }
 err() { printf '[pinctl][error] %s\n' "$*" >&2; }
 
 build_frontend() {
-  log "building frontend…"
-  ( cd "$REPO_DIR/frontend" && npm run build )
+  log "installing deps + building frontend…"
+  # npm ci installs exactly from package-lock.json, so a changed dependency
+  # never silently builds against stale node_modules.
+  ( cd "$REPO_DIR/frontend" && npm ci && npm run build )
 }
 
 cmd="${1:-}"
