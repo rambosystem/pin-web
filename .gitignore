@@ -22,4 +22,7 @@ frontend/.vite/
 .vscode/
 .idea/
 .DS_Store
-*.log.claude/launch.json
+*.log
+
+# Claude Code browser preview config
+.claude/launch.json
