@@ -39,7 +39,14 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  listPins: () => http<PinListResponse>("/pins"),
+  listPins: (refresh = false) =>
+    http<PinListResponse>(`/pins${refresh ? "?refresh=true" : ""}`),
+  translate: (text: string, pinKey = "", field = "", to = "zh", signal?: AbortSignal) =>
+    http<{ translated: string; cached: boolean }>("/translate", {
+      method: "POST",
+      body: JSON.stringify({ text, to, pin_key: pinKey, field }),
+      signal,
+    }),
   getPin: (key: string) => http<PinDetail>(`/pins/${encodeURIComponent(key)}`),
   getPinForm: (key: string, reload = false) =>
     http<IntakeFormResult>(`/pins/${encodeURIComponent(key)}/form${reload ? "?reload=true" : ""}`),

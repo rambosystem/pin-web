@@ -39,6 +39,7 @@ import { IntakeFormPanel } from "@/components/IntakeFormPanel";
 import { MarkdownLite } from "@/components/MarkdownLite";
 import { StatusBadge } from "@/components/StatusBadge";
 import { TranslatedText } from "@/components/TranslatedText";
+import { patchCachedPin } from "@/hooks/usePins";
 import { formatFileSize } from "@/lib/utils";
 import { usePinDetail } from "@/hooks/usePinDetail";
 
@@ -205,6 +206,7 @@ export function PinDetail() {
     try {
       const updated = await api.doTransition(key, transition.id);
       setData(updated);
+      patchCachedPin(updated);
       toast.success(`Status updated to "${updated.status}"`, { id: tid });
       if (updated.status === "Ready for Technical Review") {
         setFormsRefreshKey((k) => k + 1);
@@ -255,6 +257,7 @@ export function PinDetail() {
     try {
       const updated = await api.updateAssignee(key, user.account_id);
       setData(updated);
+      patchCachedPin(updated);
       toast.success(`Assigned to ${user.display_name}`, { id: tid });
     } catch (e) {
       const msg = (e instanceof Error ? e.message : String(e)).replace(/^HTTP \d+:\s*/, "");

@@ -114,7 +114,7 @@ function SortButton({
 }
 
 export function PinList() {
-  const { items, loading, error, reload } = usePins();
+  const { items, loading, refreshing, error, reload } = usePins();
   const [q, setQ] = useState("");
   const [statuses, setStatuses] = useState<string[]>(["Backlog", "Ready for Technical Review"]);
   const [urgencies, setUrgencies] = useState<string[]>([]);
@@ -185,10 +185,10 @@ export function PinList() {
         <Button
           variant="outline"
           size="sm"
-          onClick={() => void reload()}
-          disabled={loading}
+          onClick={() => void reload(true)}
+          disabled={loading || refreshing}
         >
-          <RefreshCw className={loading ? "animate-spin" : ""} />
+          <RefreshCw className={loading || refreshing ? "animate-spin" : ""} />
           Refresh
         </Button>
       </div>

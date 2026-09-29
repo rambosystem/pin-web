@@ -13,6 +13,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -31,7 +32,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from lib.atlassian import basic_auth, jira_api_v3_url  # noqa: E402
 from lib.env import load_dotenv  # noqa: E402
-from lib.http import request_json, ssl_context  # noqa: E402
+from lib.http import request_json, request_raw, ssl_context  # noqa: E402
 from lib.jira_forms import (  # noqa: E402
     DEFAULT_INTAKE_FORM_NAME,
     build_clean_intake_fields,
@@ -163,6 +164,10 @@ _CLOUD_ID_CACHE: str | None = None
 #                            "form": {"result": {...}, "ts": float},
 #                            "translations": {"description": "...", "problem": "...", ...} } }
 _PIN_CACHE: dict[str, dict[str, Any]] = {}
+# Endpoints run in a thread pool; concurrent translate calls used to race on
+# the same temp file and could leave a truncated/corrupt cache on disk (which
+# then silently failed to load on the next start => "translations lost").
+_PIN_CACHE_LOCK = threading.RLock()
 _ANALYSIS_CACHE_TTL = 3600 * 24 * 7  # 7 days
 _FORM_CACHE_TTL = 3600 * 24 * 1     # 1 day
 
@@ -188,23 +193,30 @@ def _load_pin_cache() -> None:
         raw = json.loads(PIN_CACHE_FILE.read_text(encoding="utf-8"))
         if isinstance(raw, dict):
             _PIN_CACHE = raw
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001
+        # Never silently discard: keep the broken file for inspection.
+        print(f"[cache] failed to load {PIN_CACHE_FILE}: {exc}", flush=True)
+        try:
+            os.replace(PIN_CACHE_FILE, PIN_CACHE_FILE.with_suffix(".corrupt.json"))
+        except Exception:
+            pass
 
 
 def _save_pin_cache() -> None:
     # Atomic write: serialize to a temp file in the same dir, then os.replace
-    # so a crash mid-write can never corrupt the existing cache file.
-    try:
-        CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = PIN_CACHE_FILE.with_suffix(PIN_CACHE_FILE.suffix + ".tmp")
-        tmp.write_text(
-            json.dumps(_PIN_CACHE, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        os.replace(tmp, PIN_CACHE_FILE)
-    except Exception:
-        pass
+    # so a crash mid-write can never corrupt the existing cache file. The lock
+    # serialises writers so two threads never share the temp file.
+    with _PIN_CACHE_LOCK:
+        try:
+            CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = PIN_CACHE_FILE.with_suffix(PIN_CACHE_FILE.suffix + ".tmp")
+            tmp.write_text(
+                json.dumps(_PIN_CACHE, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            os.replace(tmp, PIN_CACHE_FILE)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[cache] failed to persist {PIN_CACHE_FILE}: {exc}", flush=True)
 
 
 _load_pin_cache()
@@ -570,7 +582,17 @@ def _llm_request_payload(
     return url, headers, json.dumps(payload).encode("utf-8")
 
 
+_LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT_SECONDS", "180"))
+
+
 def _llm_chat(system: str, user: str, *, max_tokens: int = 800, temperature: float = 0.4, model: str | None = None) -> str:
+    return _llm_chat_full(system, user, max_tokens=max_tokens, temperature=temperature, model=model)[0]
+
+
+def _llm_chat_full(
+    system: str, user: str, *, max_tokens: int = 800, temperature: float = 0.4, model: str | None = None,
+) -> tuple[str, str]:
+    """Non-streaming chat call. Returns ``(content, finish_reason)``."""
     url, headers, body = _llm_request_payload(
         system, user, max_tokens=max_tokens, temperature=temperature, stream=False, model=model,
     )
@@ -581,6 +603,7 @@ def _llm_chat(system: str, user: str, *, max_tokens: int = 800, temperature: flo
             headers=headers,
             data=json.loads(body),
             insecure_env_var="PIN_REPORT_INSECURE_SSL",
+            timeout=_LLM_TIMEOUT,
         )
     except HTTPError as exc:
         detail = ""
@@ -589,11 +612,14 @@ def _llm_chat(system: str, user: str, *, max_tokens: int = 800, temperature: flo
         except Exception:
             pass
         raise HTTPException(502, f"LLM request failed: {detail or exc.reason}") from exc
+    except OSError as exc:
+        raise HTTPException(502, f"LLM request failed: {exc}") from exc
     choices = data.get("choices") if isinstance(data, dict) else None
     if not choices:
         raise HTTPException(502, "LLM response missing choices")
     content = choices[0].get("message", {}).get("content")
-    return (content or "").strip()
+    finish_reason = str(choices[0].get("finish_reason") or "")
+    return (content or "").strip(), finish_reason
 
 
 def _llm_chat_stream(
@@ -610,7 +636,7 @@ def _llm_chat_stream(
     req = Request(url, data=body, method="POST", headers=headers)
     ctx = ssl_context("PIN_REPORT_INSECURE_SSL")
     try:
-        resp = urlopen(req, context=ctx)
+        resp = urlopen(req, context=ctx, timeout=_LLM_TIMEOUT)
     except HTTPError as exc:
         detail = ""
         try:
@@ -1001,8 +1027,25 @@ def _issue_to_pin_summary(issue: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@app.get("/api/pins")
-def list_pins() -> dict[str, Any]:
+# ---------------------------------------------------------------------------
+# PIN list cache (stale-while-revalidate)
+# ---------------------------------------------------------------------------
+# The Jira search behind /api/pins takes several seconds from the deployment
+# host, and the list page re-requested it on every visit. We keep the last
+# result in memory, serve it instantly, and refresh it in the background when
+# it is older than _PINS_LIST_TTL. A periodic thread keeps it warm so even the
+# first visit after a long idle period is fast. ``?refresh=true`` forces a
+# synchronous fetch (the Refresh button).
+_PINS_LIST_TTL = float(os.environ.get("PINS_LIST_TTL_SECONDS", "120"))
+_PINS_LIST_WARM_INTERVAL = float(os.environ.get("PINS_LIST_WARM_INTERVAL_SECONDS", "300"))
+_PINS_LIST_CACHE: dict[str, Any] = {"items": None, "ts": 0.0, "error": ""}
+_PINS_LIST_LOCK = threading.Lock()
+_PINS_LIST_FETCH_LOCK = threading.Lock()  # only one Jira search in flight at a time
+_PINS_LIST_REFRESHING = False
+_PIN_LIST_FIELDS = ["key", "summary", "status", "priority", "created", "reporter", "assignee"]
+
+
+def _fetch_pin_list_from_jira() -> list[dict[str, Any]]:
     profile = _profile()
     account_id = profile.get("account_id") or ""
     if not account_id:
@@ -1012,9 +1055,101 @@ def list_pins() -> dict[str, Any]:
         f'project = PIN AND assignee in ("{account_id}") '
         f"AND status IN ({statuses}) ORDER BY created DESC"
     )
-    issues = _jira_search(jql, ["key", "summary", "status", "priority", "created", "reporter", "assignee"])
-    items = [_issue_to_pin_summary(i) for i in issues]
-    return {"items": items}
+    issues = _jira_search(jql, _PIN_LIST_FIELDS)
+    return [_issue_to_pin_summary(i) for i in issues]
+
+
+def _refresh_pin_list(*, wait: bool = True) -> list[dict[str, Any]] | None:
+    """Fetch the list from Jira and store it. Concurrent callers coalesce: if a
+    fetch is already running, ``wait=True`` waits for it and returns its result,
+    ``wait=False`` returns None immediately."""
+    if not _PINS_LIST_FETCH_LOCK.acquire(blocking=wait):
+        return None
+    try:
+        started = time.time()
+        with _PINS_LIST_LOCK:
+            # Another thread may have just refreshed while we waited for the lock.
+            if _PINS_LIST_CACHE["items"] is not None and started - _PINS_LIST_CACHE["ts"] < 1.0:
+                return list(_PINS_LIST_CACHE["items"])
+        t0 = time.time()
+        items = _fetch_pin_list_from_jira()
+        with _PINS_LIST_LOCK:
+            _PINS_LIST_CACHE.update({"items": items, "ts": time.time(), "error": ""})
+        print(f"[pins] list refreshed: {len(items)} items in {time.time() - t0:.1f}s", flush=True)
+        return items
+    except Exception as exc:  # noqa: BLE001
+        with _PINS_LIST_LOCK:
+            _PINS_LIST_CACHE["error"] = str(getattr(exc, "detail", exc))
+        raise
+    finally:
+        _PINS_LIST_FETCH_LOCK.release()
+
+
+def _refresh_pin_list_in_background() -> None:
+    global _PINS_LIST_REFRESHING
+    with _PINS_LIST_LOCK:
+        if _PINS_LIST_REFRESHING:
+            return
+        _PINS_LIST_REFRESHING = True
+
+    def run() -> None:
+        global _PINS_LIST_REFRESHING
+        try:
+            _refresh_pin_list(wait=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[pins] background refresh failed: {exc}", flush=True)
+        finally:
+            with _PINS_LIST_LOCK:
+                _PINS_LIST_REFRESHING = False
+
+    threading.Thread(target=run, name="pins-refresh", daemon=True).start()
+
+
+def _pin_list_warm_loop() -> None:
+    """Keep the list cache warm forever (daemon thread started at startup)."""
+    while True:
+        try:
+            _refresh_pin_list(wait=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[pins] warm refresh failed: {exc}", flush=True)
+        time.sleep(_PINS_LIST_WARM_INTERVAL)
+
+
+def _patch_pin_list_cache(updated: dict[str, Any]) -> None:
+    """Reflect a status/assignee change in the cached list right away, then
+    schedule a real refresh so membership (JQL) is re-evaluated by Jira."""
+    key = updated.get("key")
+    if not key:
+        return
+    with _PINS_LIST_LOCK:
+        items = _PINS_LIST_CACHE["items"]
+        if items is not None:
+            keep = updated.get("status") in DEFAULT_STATUSES
+            new_items = [dict(updated) if p.get("key") == key else p for p in items if keep or p.get("key") != key]
+            if keep and not any(p.get("key") == key for p in new_items):
+                new_items.insert(0, dict(updated))
+            _PINS_LIST_CACHE["items"] = new_items
+    _refresh_pin_list_in_background()
+
+
+@app.on_event("startup")
+def _start_pin_list_warmer() -> None:
+    if os.environ.get("PINS_LIST_WARM", "1") != "0":
+        threading.Thread(target=_pin_list_warm_loop, name="pins-warm", daemon=True).start()
+
+
+@app.get("/api/pins")
+def list_pins(refresh: bool = False) -> dict[str, Any]:
+    with _PINS_LIST_LOCK:
+        items = _PINS_LIST_CACHE["items"]
+        ts = _PINS_LIST_CACHE["ts"]
+    if refresh or items is None:
+        items = _refresh_pin_list(wait=True) or []
+        return {"items": items, "cached": False, "age": 0}
+    age = time.time() - ts
+    if age > _PINS_LIST_TTL:
+        _refresh_pin_list_in_background()
+    return {"items": items, "cached": True, "age": round(age)}
 
 
 @app.get("/api/pins/{key}")
@@ -1064,6 +1199,7 @@ def get_pin_form(key: str, reload: bool = False) -> dict[str, Any]:
 
     if reload:
         _PIN_CACHE.setdefault(key, {}).pop("translations", None)
+        _PIN_CACHE.setdefault(key, {}).pop("translation_hashes", None)
         _save_pin_cache()
 
     if not form:
@@ -1670,7 +1806,9 @@ def do_transition(key: str, payload: TransitionRequest) -> dict[str, Any]:
             exc.code, _jira_error_message(detail, exc.reason or "transition failed")
         ) from exc
     issue = _jira_get_issue(key, ["summary", "status", "priority", "description", "created", "attachment", "reporter", "assignee"])
-    return _issue_to_pin_summary(issue)
+    result = _issue_to_pin_summary(issue)
+    _patch_pin_list_cache(result)
+    return result
 
 
 class AssigneeRequest(BaseModel):
@@ -1707,7 +1845,9 @@ def update_assignee(key: str, payload: AssigneeRequest) -> dict[str, Any]:
             exc.code, _jira_error_message(detail, exc.reason or "assignee update failed")
         ) from exc
     issue = _jira_get_issue(key, ["summary", "status", "priority", "description", "created", "attachment", "reporter", "assignee"])
-    return _issue_to_pin_summary(issue)
+    result = _issue_to_pin_summary(issue)
+    _patch_pin_list_cache(result)
+    return result
 
 
 @app.get("/api/users/search")
@@ -1762,19 +1902,64 @@ def search_users(q: str = "", max_results: int = 8) -> dict[str, Any]:
     return {"items": items}
 
 
-@app.get("/api/translate")
-def translate_text(text: str = "", to: str = "zh", pin_key: str = "", field: str = "") -> dict[str, Any]:
+class TranslateRequest(BaseModel):
+    text: str = ""
+    to: str = "zh"
+    pin_key: str = ""
+    field: str = ""
+
+
+_TRANSLATE_MAX_TOKENS = int(os.environ.get("TRANSLATE_MAX_TOKENS", "4000"))
+_TRANSLATE_TRUNCATED_MARK = "\n\n[翻译因长度限制被截断]"
+_TRANSLATE_INFLIGHT: dict[tuple[str, str], threading.Lock] = {}
+_TRANSLATE_INFLIGHT_LOCK = threading.Lock()
+
+
+def _text_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+
+
+def _translation_lock(pin_key: str, field: str) -> threading.Lock:
+    with _TRANSLATE_INFLIGHT_LOCK:
+        lock = _TRANSLATE_INFLIGHT.get((pin_key, field))
+        if lock is None:
+            lock = threading.Lock()
+            _TRANSLATE_INFLIGHT[(pin_key, field)] = lock
+        return lock
+
+
+def _cached_translation(pin_key: str, field: str, text: str) -> str | None:
+    """Return a cached translation for (pin, field) if it still matches ``text``."""
+    entry = _PIN_CACHE.get(pin_key, {})
+    existing = (entry.get("translations") or {}).get(field)
+    if not existing:
+        return None
+    stored_hash = (entry.get("translation_hashes") or {}).get(field)
+    if stored_hash:
+        return existing if stored_hash == _text_hash(text) else None
+    # Legacy entry (no hash). Old translations were produced with max_tokens=1000
+    # and long texts got cut off; a Chinese rendering that is implausibly short
+    # relative to the source is almost certainly truncated => re-translate.
+    if len(text) > 1500 and len(existing) < 0.2 * len(text):
+        return None
+    return existing
+
+
+def _translate(text: str, to: str, pin_key: str, field: str) -> dict[str, Any]:
     """Translate text using the configured LLM, with persistent per-PIN cache.
 
-    Cache key is (pin_key, field). Without PIN context the result is not cached.
-    Translations are invalidated by Reload Form, not by time.
+    Cache key is (pin_key, field), validated against a hash of the source text
+    so an edited description/form field is re-translated instead of showing a
+    stale result. Without PIN context the result is not cached. Concurrent
+    requests for the same (pin, field) coalesce into a single LLM call.
     Returns ``{"translated": "...", "cached": bool}``.
     """
     if not text.strip():
         return {"translated": "", "cached": False}
 
-    if pin_key and field:
-        existing = _PIN_CACHE.get(pin_key, {}).get("translations", {}).get(field)
+    cacheable = bool(pin_key and field)
+    if cacheable:
+        existing = _cached_translation(pin_key, field, text)
         if existing:
             return {"translated": existing, "cached": True}
 
@@ -1782,15 +1967,51 @@ def translate_text(text: str = "", to: str = "zh", pin_key: str = "", field: str
     target_lang = lang_map.get(to, to)
     system = (
         f"You are a Pacvue Ads Product Manager, you need to translate the user's text into {target_lang}. "
+        "Translate the complete text; never summarise or omit parts. "
         "Output only the translated text — no explanations, no notes, no markdown."
     )
-    translated = _llm_chat(system, text, max_tokens=1000, temperature=0.1,
-                           model=os.environ.get("TRANSLATE_LLM_MODEL", DEFAULT_TRANSLATE_MODEL))
+    model = os.environ.get("TRANSLATE_LLM_MODEL", DEFAULT_TRANSLATE_MODEL)
 
-    if pin_key and field:
-        _PIN_CACHE.setdefault(pin_key, {}).setdefault("translations", {})[field] = translated
-        _save_pin_cache()
+    def call_llm() -> tuple[str, bool]:
+        translated, finish_reason = _llm_chat_full(
+            system, text, max_tokens=_TRANSLATE_MAX_TOKENS, temperature=0.1, model=model,
+        )
+        if not translated:
+            raise HTTPException(502, "LLM returned an empty translation")
+        truncated = finish_reason == "length"
+        if truncated:
+            # Truncated output: return it (better than nothing) but never cache it.
+            translated += _TRANSLATE_TRUNCATED_MARK
+        return translated, truncated
+
+    if not cacheable:
+        return {"translated": call_llm()[0], "cached": False}
+
+    lock = _translation_lock(pin_key, field)
+    with lock:
+        # Another request may have finished the same translation while we waited.
+        existing = _cached_translation(pin_key, field, text)
+        if existing:
+            return {"translated": existing, "cached": True}
+        translated, truncated = call_llm()
+        if not truncated:
+            with _PIN_CACHE_LOCK:
+                entry = _PIN_CACHE.setdefault(pin_key, {})
+                entry.setdefault("translations", {})[field] = translated
+                entry.setdefault("translation_hashes", {})[field] = _text_hash(text)
+            _save_pin_cache()
     return {"translated": translated, "cached": False}
+
+
+@app.post("/api/translate")
+def translate_text_post(payload: TranslateRequest) -> dict[str, Any]:
+    """Preferred entry point: JSON body avoids URL length limits on long texts."""
+    return _translate(payload.text, payload.to, payload.pin_key, payload.field)
+
+
+@app.get("/api/translate")
+def translate_text(text: str = "", to: str = "zh", pin_key: str = "", field: str = "") -> dict[str, Any]:
+    return _translate(text, to, pin_key, field)
 
 
 @app.get("/api/profile")
@@ -1815,7 +2036,6 @@ def proxy_jira_attachment(media_id: str, filename: str = "", alt: str = ""):
     if not base:
         raise HTTPException(500, "Jira base_url missing from profile")
     auth = _jira_auth()
-    ctx = ssl_context("JIRA_INSECURE_SSL")
 
     fname = filename or alt or ""
     # REST API first (most reliable), then temporary attachment URL
@@ -1825,13 +2045,16 @@ def proxy_jira_attachment(media_id: str, filename: str = "", alt: str = ""):
 
     last_err = ""
     for url in urls:
-        req = Request(url, method="GET")
-        req.add_header("Authorization", f"Basic {auth}")
         try:
-            resp = urlopen(req, context=ctx)
-            content_type = resp.headers.get("Content-Type") or "application/octet-stream"
+            status, resp_headers, content = request_raw(
+                url, headers={"Authorization": f"Basic {auth}"}, insecure_env_var="JIRA_INSECURE_SSL",
+            )
+            if status >= 400:
+                last_err = f"{url}: HTTP {status}"
+                continue
+            content_type = resp_headers.get("Content-Type") or "application/octet-stream"
             return Response(
-                content=resp.read(),
+                content=content,
                 media_type=content_type,
                 headers={"Cache-Control": "public, max-age=3600"},
             )
@@ -1854,19 +2077,19 @@ def proxy_jira_attachment_thumbnail(media_id: str):
     if not base:
         raise HTTPException(500, "Jira base_url missing from profile")
     auth = _jira_auth()
-    ctx = ssl_context("JIRA_INSECURE_SSL")
     url = f"{base}/rest/api/3/attachment/thumbnail/{media_id}"
-    req = Request(url, method="GET")
-    req.add_header("Authorization", f"Basic {auth}")
     try:
-        resp = urlopen(req, context=ctx)
-        content_type = resp.headers.get("Content-Type") or "image/png"
-        return Response(
-            content=resp.read(),
-            media_type=content_type,
-            headers={"Cache-Control": "public, max-age=86400"},
+        status, resp_headers, content = request_raw(
+            url, headers={"Authorization": f"Basic {auth}"}, insecure_env_var="JIRA_INSECURE_SSL",
         )
-    except HTTPError:
+        if status < 400:
+            content_type = resp_headers.get("Content-Type") or "image/png"
+            return Response(
+                content=content,
+                media_type=content_type,
+                headers={"Cache-Control": "public, max-age=86400"},
+            )
+    except Exception:
         pass  # fall back to full-size
     # Fallback: redirect to the full-size attachment proxy
     return proxy_jira_attachment(media_id)

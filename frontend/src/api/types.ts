@@ -69,6 +69,10 @@ export interface PinSummary {
 
 export interface PinListResponse {
   items: PinSummary[];
+  /** True when served from the backend's in-memory cache. */
+  cached?: boolean;
+  /** Age of the cached list in seconds (0 when freshly fetched). */
+  age?: number;
 }
 
 /** Intake form result from GET /api/pins/{key}/form */
