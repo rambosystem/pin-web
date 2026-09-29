@@ -126,7 +126,12 @@ export function TranslatedText({
           <Skeleton className="h-3 w-[75%]" />
         </div>
       )}
-      {!loading && translated && <MarkdownLite text={translated} />}
+      {!loading && translated && (
+        <MarkdownLite
+          text={translated}
+          className="text-foreground/70 prose-p:text-foreground/70 prose-li:text-foreground/70 prose-strong:text-foreground/80"
+        />
+      )}
       {!loading && error && (
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <span>翻译失败：{error}</span>
