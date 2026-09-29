@@ -16,6 +16,10 @@ from urllib.parse import urlsplit
 # API can occasionally hang; without a timeout a stuck call pins a worker
 # thread forever and the whole app slows down.
 DEFAULT_TIMEOUT = 60.0
+# TCP connect + TLS handshake budget. Cross-border links from the deployment
+# host occasionally black-hole a brand-new connection; a short handshake
+# timeout plus one retry turns a 60 s stall into a few seconds.
+CONNECT_TIMEOUT = float(os.environ.get("HTTP_CONNECT_TIMEOUT", "12"))
 
 _SSL_CTX_LOCK = threading.Lock()
 _SSL_CTX_CACHE: dict[bool, ssl.SSLContext] = {}
@@ -75,9 +79,29 @@ def _pool_key(scheme: str, host: str, port: int, insecure: bool) -> tuple[str, s
 
 
 def _new_connection(scheme: str, host: str, port: int, insecure_env_var: str | None, timeout: float):
-    if scheme == "https":
-        return http.client.HTTPSConnection(host, port, timeout=timeout, context=ssl_context(insecure_env_var))
-    return http.client.HTTPConnection(host, port, timeout=timeout)
+    """Open a connection: connect + TLS under CONNECT_TIMEOUT (retried once on a
+    stall), then switch the socket to the per-request read timeout."""
+    connect_timeout = min(CONNECT_TIMEOUT, timeout)
+    last_exc: Exception | None = None
+    for _attempt in range(2):
+        if scheme == "https":
+            conn = http.client.HTTPSConnection(
+                host, port, timeout=connect_timeout, context=ssl_context(insecure_env_var)
+            )
+        else:
+            conn = http.client.HTTPConnection(host, port, timeout=connect_timeout)
+        try:
+            conn.connect()
+        except (OSError, ssl.SSLError) as exc:  # socket.timeout is an OSError
+            last_exc = exc
+            _discard(conn)
+            continue
+        conn.timeout = timeout
+        if conn.sock is not None:
+            conn.sock.settimeout(timeout)
+        return conn
+    assert last_exc is not None
+    raise last_exc
 
 
 def _acquire(scheme: str, host: str, port: int, insecure_env_var: str | None, timeout: float):

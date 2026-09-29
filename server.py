@@ -1048,6 +1048,7 @@ def _issue_to_pin_summary(issue: dict[str, Any]) -> dict[str, Any]:
 _PINS_LIST_TTL = float(os.environ.get("PINS_LIST_TTL_SECONDS", str(24 * 3600)))
 _PINS_LIST_WARM_INTERVAL = float(os.environ.get("PINS_LIST_WARM_INTERVAL_SECONDS", str(24 * 3600)))
 _PINS_LIST_CACHE: dict[str, Any] = {"items": None, "ts": 0.0, "error": ""}
+_PINS_LIST_FILE = CACHE_DIR / "pin_list.json"  # last good list, so a restart serves instantly
 _PINS_LIST_LOCK = threading.Lock()
 _PINS_LIST_FETCH_LOCK = threading.Lock()  # only one Jira search in flight at a time
 _PINS_LIST_REFRESHING = False
@@ -1082,9 +1083,11 @@ def _refresh_pin_list(*, wait: bool = True) -> list[dict[str, Any]] | None:
                 return list(_PINS_LIST_CACHE["items"])
         t0 = time.time()
         items = _fetch_pin_list_from_jira()
+        now = time.time()
         with _PINS_LIST_LOCK:
-            _PINS_LIST_CACHE.update({"items": items, "ts": time.time(), "error": ""})
-        print(f"[pins] list refreshed: {len(items)} items in {time.time() - t0:.1f}s", flush=True)
+            _PINS_LIST_CACHE.update({"items": items, "ts": now, "error": ""})
+        print(f"[pins] list refreshed: {len(items)} items in {now - t0:.1f}s", flush=True)
+        _save_pin_list_file(items, now)
         return items
     except Exception as exc:  # noqa: BLE001
         with _PINS_LIST_LOCK:
@@ -1094,11 +1097,40 @@ def _refresh_pin_list(*, wait: bool = True) -> list[dict[str, Any]] | None:
         _PINS_LIST_FETCH_LOCK.release()
 
 
+def _save_pin_list_file(items: list[dict[str, Any]], ts: float) -> None:
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = _PINS_LIST_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps({"items": items, "ts": ts}, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, _PINS_LIST_FILE)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[pins] failed to persist list cache: {exc}", flush=True)
+
+
+def _load_pin_list_file() -> None:
+    """Seed the in-memory list from the last persisted copy (marked stale so
+    the startup warm-up still refreshes it)."""
+    try:
+        if not _PINS_LIST_FILE.exists():
+            return
+        raw = json.loads(_PINS_LIST_FILE.read_text(encoding="utf-8"))
+        items = raw.get("items") if isinstance(raw, dict) else None
+        if isinstance(items, list):
+            with _PINS_LIST_LOCK:
+                _PINS_LIST_CACHE.update({"items": items, "ts": float(raw.get("ts") or 0.0)})
+            print(f"[pins] loaded {len(items)} items from {_PINS_LIST_FILE.name}", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[pins] failed to load persisted list: {exc}", flush=True)
+
+
+_load_pin_list_file()
+
+
 def _refresh_pin_list_in_background() -> None:
     global _PINS_LIST_REFRESHING
     with _PINS_LIST_LOCK:
-        if _PINS_LIST_REFRESHING:
-            return
+        if _PINS_LIST_REFRESHING or _PINS_LIST_FETCH_LOCK.locked():
+            return  # a refresh (possibly the startup warm-up) is already running
         _PINS_LIST_REFRESHING = True
 
     def run() -> None:
@@ -1115,13 +1147,16 @@ def _refresh_pin_list_in_background() -> None:
 
 
 def _pin_list_warm_loop() -> None:
-    """Keep the list cache warm forever (daemon thread started at startup)."""
+    """Refresh the list once per _PINS_LIST_WARM_INTERVAL (daemon thread).
+    A failed attempt is retried after a minute instead of waiting a whole day."""
     while True:
         try:
             _refresh_pin_list(wait=True)
+            delay = _PINS_LIST_WARM_INTERVAL
         except Exception as exc:  # noqa: BLE001
             print(f"[pins] warm refresh failed: {exc}", flush=True)
-        time.sleep(_PINS_LIST_WARM_INTERVAL)
+            delay = min(60.0, _PINS_LIST_WARM_INTERVAL)
+        time.sleep(delay)
 
 
 def _patch_pin_list_cache(updated: dict[str, Any]) -> None:
@@ -1155,6 +1190,8 @@ def list_pins(refresh: bool = False) -> dict[str, Any]:
     if refresh or items is None:
         items = _refresh_pin_list(wait=True) or []
         return {"items": items, "cached": False, "age": 0}
+    # Note: a list restored from disk is served immediately even while the
+    # startup warm-up is still fetching; visits never wait on Jira.
     age = time.time() - ts
     if age > _PINS_LIST_TTL:
         _refresh_pin_list_in_background()
