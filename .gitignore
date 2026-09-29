@@ -22,4 +22,4 @@ frontend/.vite/
 .vscode/
 .idea/
 .DS_Store
-*.log
+*.log.claude/launch.json
