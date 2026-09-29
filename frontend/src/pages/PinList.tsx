@@ -7,8 +7,10 @@ import {
   ExternalLink,
   RefreshCw,
   Search,
+  TerminalSquare,
 } from "lucide-react";
 import type { PinSummary } from "@/api/types";
+import { buildClaudeCodeLink, buildProcessPinPrompt } from "@/lib/claudeLink";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -297,7 +299,7 @@ export function PinList() {
                   onClick={() => toggleSort("created")}
                 />
               </TableHead>
-              <TableHead className="w-[80px] text-right">Jira</TableHead>
+              <TableHead className="w-[90px] text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -324,7 +326,7 @@ export function PinList() {
                 key={p.key}
                 className="cursor-pointer"
                 onClick={(e) => {
-                  // Let inner links (key/summary/Jira) handle their own clicks.
+                  // Let inner links (key/summary/actions) handle their own clicks.
                   if ((e.target as HTMLElement).closest("a")) return;
                   window.open(`/pins/${p.key}`, "_blank", "noopener");
                 }}
@@ -379,14 +381,24 @@ export function PinList() {
                   {p.created ? new Date(p.created).toLocaleDateString() : "—"}
                 </TableCell>
                 <TableCell className="text-right">
-                  <a
-                    href={p.jira_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-                  >
-                    <ExternalLink className="h-3.5 w-3.5" />
-                  </a>
+                  <div className="inline-flex items-center gap-3">
+                    <a
+                      href={buildClaudeCodeLink(buildProcessPinPrompt(p, null, null))}
+                      title="Open in Claude Code (/process-pin)"
+                      className="inline-flex items-center text-xs text-muted-foreground hover:text-foreground"
+                    >
+                      <TerminalSquare className="h-3.5 w-3.5" />
+                    </a>
+                    <a
+                      href={p.jira_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      title="Open in Jira"
+                      className="inline-flex items-center text-xs text-muted-foreground hover:text-foreground"
+                    >
+                      <ExternalLink className="h-3.5 w-3.5" />
+                    </a>
+                  </div>
                 </TableCell>
               </TableRow>
             ))}
