@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   ArrowDown,
@@ -40,6 +40,27 @@ function uniqueValues(items: PinSummary[], pick: (p: PinSummary) => string) {
 
 type SortKey = "key" | "status" | "urgency" | "reporter" | "created";
 type SortDir = "asc" | "desc";
+type SortSpec = { key: SortKey; dir: SortDir };
+
+const SORT_STORAGE_KEY = "pin-list-sorts";
+const SORT_KEYS: SortKey[] = ["key", "status", "urgency", "reporter", "created"];
+const DEFAULT_SORTS: SortSpec[] = [{ key: "urgency", dir: "desc" }];
+
+function loadSorts(): SortSpec[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SORT_STORAGE_KEY) || "null");
+    if (Array.isArray(raw)) {
+      const valid = raw.filter(
+        (s): s is SortSpec =>
+          s && SORT_KEYS.includes(s.key) && (s.dir === "asc" || s.dir === "desc"),
+      );
+      if (valid.length > 0) return valid;
+    }
+  } catch {
+    /* ignore corrupt or unavailable storage */
+  }
+  return DEFAULT_SORTS;
+}
 
 const URGENCY_RANK: Record<string, number> = {
   Critical: 4,
@@ -128,9 +149,15 @@ export function PinList() {
   const [urgencies, setUrgencies] = useState<string[]>([]);
   const [reporters, setReporters] = useState<string[]>([]);
   const [dateFilter, setDateFilter] = useState<DateFilterValue | null>(null);
-  const [sorts, setSorts] = useState<{ key: SortKey; dir: SortDir }[]>([
-    { key: "urgency", dir: "desc" },
-  ]);
+  const [sorts, setSorts] = useState<SortSpec[]>(loadSorts);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SORT_STORAGE_KEY, JSON.stringify(sorts));
+    } catch {
+      /* storage unavailable */
+    }
+  }, [sorts]);
 
   const statusOptions = useMemo(() => uniqueValues(items, (p) => p.status), [items]);
   const urgencyOptions = useMemo(() => uniqueValues(items, (p) => p.urgency), [items]);
