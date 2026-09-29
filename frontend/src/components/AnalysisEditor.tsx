@@ -200,8 +200,8 @@ export function AnalysisEditor({
             })}
           </div>
         )}
-        {!typewriter && hasContent && labels && <LabelChips labels={labels} />}
-        {!typewriter && !hasContent && busy && (
+        {!typewriter && !busy && hasContent && labels && <LabelChips labels={labels} />}
+        {!typewriter && busy && (
           <div className="space-y-5 py-2">
             <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin text-primary" />
@@ -217,7 +217,7 @@ export function AnalysisEditor({
             No analysis yet — click <strong>Analyze</strong> to run.
           </div>
         )}
-        {!typewriter && hasContent && FIELDS.map(({ key, label, hint }) => {
+        {!typewriter && !busy && hasContent && FIELDS.map(({ key, label, hint }) => {
           const v = (values[key] || "").trim();
           if (!v) return null;
           return <FieldBox key={key} label={label} hint={hint} text={v} />;
