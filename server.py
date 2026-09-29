@@ -32,7 +32,6 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from lib.atlassian import basic_auth, jira_api_v3_url  # noqa: E402
 from lib.domain import (  # noqa: E402
-    DOMAIN_CONTEXT_EN,
     PROMPT_VERSION,
     analysis_domain_block,
     translate_system_prompt,
@@ -49,8 +48,6 @@ from lib.jira_forms import (  # noqa: E402
     get_issue_form_by_name,
     list_issue_forms,
     list_submitted_forms_clean,
-    save_issue_form_answers,
-    submit_issue_form,
 )
 from lib.pin_labels import (  # noqa: E402
     build_labels_prompt_block,
@@ -117,35 +114,6 @@ ANALYZE_SYSTEM_PROMPT = (
 _LABEL_MODULES, _LABEL_NATURES = load_label_vocab(SCRIPT_DIR)
 ANALYZE_SYSTEM_PROMPT_FULL = ANALYZE_SYSTEM_PROMPT + build_labels_prompt_block(
     _LABEL_MODULES, _LABEL_NATURES
-)
-
-AI_DRAFT_SYSTEM_PROMPT = (
-    "You are an assistant who drafts concise, professional Jira comments for "
-    "a PIN (Product Incoming Need) ticket. Use the provided ticket context and "
-    "the user's instruction to write a single comment body. "
-    "Reply in English by default. Only switch to Chinese when the user's "
-    "instruction is written in Chinese or explicitly asks for a Chinese reply. "
-    "Output plain text only — no markdown headings, no code fences, no JSON. "
-    "Keep it focused and actionable; avoid restating context the reader already "
-    "sees in the ticket. "
-    + DOMAIN_CONTEXT_EN
-)
-
-ASSESSMENT_EXPLAIN_SYSTEM_PROMPT = (
-    "You are a Technical Program Manager writing the 'Add a short explanation' "
-    "field of a PIN (Product Incoming Need) ticket's Technical Assessment Form. "
-    "This text is read by the PIN Reporter — write it as a brief, direct reply "
-    "to them (1-3 sentences) explaining the assessment of their request: what "
-    "the conclusion is and, briefly, why or what happens next. "
-    "Ground it in the substance of the PIN discussion provided, but write the "
-    "reply itself — NEVER describe or critique the discussion. Do not write "
-    "meta-statements such as 'the comment only notes…', 'no technical details "
-    "were provided', or any remark about what information is or isn't present; "
-    "simply state the assessment to the reporter. Do not invent specifics that "
-    "are not supported. Professional and concise; match the language the "
-    "discussion predominantly uses. Output plain text only: no markdown, no "
-    "headings, no preamble, no surrounding quotes. "
-    + DOMAIN_CONTEXT_EN
 )
 
 load_dotenv(SCRIPT_DIR / ".env")
@@ -631,292 +599,6 @@ def _llm_chat_full(
     return (content or "").strip(), finish_reason
 
 
-def _llm_chat_stream(
-    system: str, user: str, *, max_tokens: int = 800, temperature: float = 0.4
-):
-    """Yield content deltas from the LLM as they arrive (OpenAI-compatible SSE).
-
-    Raises HTTPException on connection/HTTP errors so the endpoint can surface
-    a clean error before any tokens reach the client.
-    """
-    url, headers, body = _llm_request_payload(
-        system, user, max_tokens=max_tokens, temperature=temperature, stream=True
-    )
-    req = Request(url, data=body, method="POST", headers=headers)
-    ctx = ssl_context("PIN_REPORT_INSECURE_SSL")
-    try:
-        resp = urlopen(req, context=ctx, timeout=_LLM_TIMEOUT)
-    except HTTPError as exc:
-        detail = ""
-        try:
-            detail = exc.read().decode("utf-8", errors="replace")[-1000:]
-        except Exception:
-            pass
-        raise HTTPException(502, f"LLM stream request failed: {detail or exc.reason}") from exc
-    except Exception as exc:
-        raise HTTPException(502, f"LLM stream connect failed: {exc}") from exc
-
-    try:
-        for raw in resp:
-            line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
-            if not line or not line.startswith("data:"):
-                continue
-            data_str = line[len("data:"):].strip()
-            if data_str == "[DONE]":
-                break
-            try:
-                obj = json.loads(data_str)
-            except json.JSONDecodeError:
-                continue
-            choices = obj.get("choices") or []
-            if not choices:
-                continue
-            delta = (choices[0].get("delta") or {}).get("content")
-            if delta:
-                yield delta
-    finally:
-        try:
-            resp.close()
-        except Exception:
-            pass
-
-
-def _build_ai_draft_user_prompt(
-    summary: dict[str, Any],
-    user_instruction: str,
-    recent_comments: list[dict[str, Any]] | None,
-) -> str:
-    parts: list[str] = [f"PIN Ticket: {summary.get('key', '')}"]
-    if summary.get("status"):
-        parts.append(f"Status: {summary['status']}")
-    if summary.get("urgency"):
-        parts.append(f"Urgency: {summary['urgency']}")
-    if summary.get("summary"):
-        parts.append(f"Summary: {summary['summary']}")
-
-    analysis = summary.get("analysis") or {}
-    analysis_lines = []
-    for k, label in [
-        ("form_request", "Form Request"),
-        ("problem", "Problem"),
-        ("background", "Background"),
-        ("impact", "Business Impact"),
-        ("expectation", "Expectation"),
-    ]:
-        v = (analysis.get(k) or "").strip()
-        if v and v != "暂无描述":
-            analysis_lines.append(f"- {label}: {v}")
-    if analysis_lines:
-        parts.append("\nLLM Analysis:")
-        parts.extend(analysis_lines)
-
-    clean = summary.get("clean_fields") or {}
-    intake_lines = []
-    for k in ["问题", "背景与客户洞察", "需求详情", "业务目标"]:
-        v = (clean.get(k) or "").strip()
-        if v:
-            intake_lines.append(f"- {k}: {v}")
-    if intake_lines:
-        parts.append("\nIntake Form:")
-        parts.extend(intake_lines)
-
-    if recent_comments:
-        parts.append("\nRecent comments (oldest → newest):")
-        for c in recent_comments[-10:]:
-            author = c.get("author") or "Unknown"
-            body = (c.get("body_text") or "").strip()
-            if not body:
-                continue
-            parts.append(f"- {author}: {body}")
-
-    parts.append(f"\nUser instruction for the new comment:\n{user_instruction}")
-    parts.append("\nWrite the comment body now in plain text:")
-    return "\n".join(parts)
-
-
-def _form_question_order(design: dict[str, Any]) -> list[str]:
-    """Return question ids in the form's visual (layout) order.
-
-    ProForma stores display order in ``design.layout`` (a list of doc blocks
-    that embed question extensions), not in the ``questions`` map, whose key
-    order is arbitrary.
-    """
-    order: list[str] = []
-    seen: set[str] = set()
-
-    def walk(node: Any) -> None:
-        if isinstance(node, list):
-            for child in node:
-                walk(child)
-            return
-        if not isinstance(node, dict):
-            return
-        attrs = node.get("attrs") or {}
-        if node.get("type") == "extension" and attrs.get("extensionKey") == "question":
-            qid = str((attrs.get("parameters") or {}).get("id") or "")
-            if qid and qid not in seen:
-                seen.add(qid)
-                order.append(qid)
-        walk(node.get("content"))
-
-    for block in design.get("layout") or []:
-        walk(block)
-    return order
-
-
-ASSESSMENT_EXPLANATION_LABEL = "Add a short explanation:"
-
-# Per-field config for the Technical Assessment Form. Keyed by ProForma
-# question label (stable across ticket template versions, unlike the qid).
-#   default : option label to pre-select for choice fields
-#   ai      : True for the field the explanation LLM fills (from comments)
-#   gate    : (gating question label, [values]) — the field is only applicable
-#             when the gating question's answer is one of `values`; mirrors the
-#             form's conditional sections so Submit sends only the active branch.
-ASSESSMENT_FIELD_CONFIG: dict[str, dict[str, Any]] = {
-    "Are there existing features or workarounds available today?": {"default": "No"},
-    "Feature Complexity": {"default": "Straightforward"},
-    ASSESSMENT_EXPLANATION_LABEL: {"ai": True},
-    "Overall TPM recommendation:": {"default": "Recommend moving forward to scoping"},
-    "Description": {
-        "gate": ("Are there existing features or workarounds available today?", ["Yes"]),
-    },
-    "Type of Feature": {
-        "default": "New Feature",
-        "gate": ("Overall TPM recommendation:", ["Recommend moving forward to scoping"]),
-    },
-    "Estimated Effort": {
-        "default": "M - 10 - 14 days",
-        "gate": ("Overall TPM recommendation:", ["Recommend moving forward to scoping"]),
-    },
-    "Needed Resources": {
-        "gate": ("Overall TPM recommendation:", ["Recommend moving forward to scoping"]),
-    },
-    "Explanation": {
-        "gate": ("Overall TPM recommendation:", ["Suggest holding or rejecting"]),
-    },
-}
-
-# ProForma question type code -> answer kind used by the panel + write payload.
-_ASSESSMENT_KIND = {
-    "cs": "single", "cd": "single",
-    "cl": "multi", "cm": "multi",
-    "rt": "text", "tl": "text", "pg": "text", "ts": "text", "te": "text",
-    "dt": "date", "dd": "date",
-}
-
-
-def _field_editmeta_options(key: str, jira_field: str) -> list[dict[str, str]]:
-    """Resolve [{id,label}] options for a jiraField-backed question.
-
-    Some ProForma jiraField questions (e.g. 'Type of Feature') omit their
-    choices from the form schema on open forms; the option ids live on the
-    Jira field instead. Best-effort — returns [] on any failure.
-    """
-    base = (_profile().get("base_url") or "").rstrip("/")
-    if not base or not jira_field:
-        return []
-    try:
-        url = jira_api_v3_url(base, f"/issue/{key}/editmeta")
-        data = request_json(
-            url,
-            headers={"Accept": "application/json", "Authorization": f"Basic {_jira_auth()}"},
-            insecure_env_var="JIRA_INSECURE_SSL",
-        )
-    except Exception:
-        return []
-    field = ((data.get("fields") or {}) if isinstance(data, dict) else {}).get(jira_field) or {}
-    out: list[dict[str, str]] = []
-    for v in field.get("allowedValues") or []:
-        oid = str(v.get("id") or "")
-        label = (v.get("value") or v.get("name") or "").strip()
-        if oid and label:
-            out.append({"id": oid, "label": label})
-    return out
-
-
-def _assessment_model(
-    key: str, design: dict[str, Any], answers: dict[str, Any] | None = None
-) -> list[dict[str, Any]]:
-    """Build the editable assessment fields from the live form schema.
-
-    Returns required fields in form order, each:
-      {id, label, kind, options:[{id,label}], default, gate, ai, value}
-    ``value`` is the form's current answer (choice ids / text / date) — used to
-    render submitted forms read-only. Choice options carry their ProForma/Jira
-    ids (needed to write answers); jiraField questions missing choices fall back
-    to the Jira field's options.
-    """
-    questions = design.get("questions") or {}
-    answers = answers or {}
-    out: list[dict[str, Any]] = []
-    for qid in _form_question_order(design):
-        q = questions.get(qid) or questions.get(str(qid))
-        if not isinstance(q, dict):
-            continue
-        label = (q.get("label") or "").strip()
-        cfg = ASSESSMENT_FIELD_CONFIG.get(label)
-        if cfg is None:
-            continue  # not part of the simplified assessment
-        kind = _ASSESSMENT_KIND.get(q.get("type") or "", "text")
-        options: list[dict[str, str]] = [
-            {"id": str(c.get("id") or ""), "label": (c.get("label") or "").strip()}
-            for c in (q.get("choices") or [])
-            if (c.get("label") or "").strip()
-        ]
-        if not options and kind in ("single", "multi") and q.get("jiraField"):
-            options = _field_editmeta_options(key, str(q.get("jiraField")))
-        default = ""
-        if kind in ("single", "multi"):
-            want = cfg.get("default")
-            labels = [o["label"] for o in options]
-            default = want if want in labels else (labels[0] if labels else "")
-        gate = cfg.get("gate")
-
-        ans = answers.get(str(qid)) or answers.get(qid) or {}
-        if kind == "multi":
-            value: Any = [str(c) for c in (ans.get("choices") or [])]
-        elif kind == "single":
-            ids = [str(c) for c in (ans.get("choices") or [])]
-            value = ids[0] if ids else ""
-        elif kind == "date":
-            value = ans.get("date") or ""
-        else:
-            value = ans.get("text") or ""
-
-        out.append(
-            {
-                "id": str(qid),
-                "label": label,
-                "kind": kind,
-                "options": options,
-                "default": default,
-                "gate": ({"by": gate[0], "values": gate[1]} if gate else None),
-                "ai": bool(cfg.get("ai")),
-                "value": value,
-            }
-        )
-    return out
-
-
-def _build_assessment_explain_prompt(comments: list[dict[str, Any]] | None) -> str:
-    """Build the explanation prompt from the PIN's discussion only."""
-    lines = ["Context from the PIN discussion (oldest → newest):"]
-    has_body = False
-    for c in (comments or [])[-30:]:
-        author = c.get("author") or "Unknown"
-        body = (c.get("body_text") or "").strip()
-        if body:
-            lines.append(f"- {author}: {body}")
-            has_body = True
-    if not has_body:
-        return ""
-    lines.append(
-        "\nWrite the short explanation as a direct reply to the PIN Reporter now:"
-    )
-    return "\n".join(lines)
-
-
 def _format_comment(raw: dict[str, Any]) -> dict[str, Any]:
     author = raw.get("author") or {}
     body_adt = raw.get("body")
@@ -1369,13 +1051,12 @@ def get_cached_analysis(key: str, clean_text_hash: str = "") -> dict[str, Any]:
     return {"cached": False}
 
 
-@app.post("/api/pins/{key}/analyze")
-def analyze_pin(key: str, body: AnalyzeRequest | None = None, force: bool = False) -> dict[str, Any]:
-    """Run LLM analysis for a single PIN.
+def _prepare_analysis(key: str, body: AnalyzeRequest | None, force: bool) -> tuple[dict[str, Any] | None, str, str]:
+    """Shared prep for the analyze endpoints.
 
-    Results are cached to ``web/cache/pin_cache.json`` (TTL 7 days) under
-    ``_PIN_CACHE[key]["analysis"]``. Pass ``?force=true`` to bypass the cache
-    and refresh (Re-analyze button).
+    Returns ``(cached_result, text_hash, user_prompt)``. ``cached_result`` is
+    non-None when a fresh cache entry matches the full-input hash and ``force``
+    is False; callers should return it as-is without calling the LLM.
     """
     clean_text = (body.clean_requirements_text or "").strip() if body else ""
 
@@ -1401,7 +1082,7 @@ def analyze_pin(key: str, body: AnalyzeRequest | None = None, force: bool = Fals
             and entry.get("hash") == text_hash
             and (time.time() - entry.get("ts", 0)) < _ANALYSIS_CACHE_TTL
         ):
-            return entry["result"]
+            return entry["result"], text_hash, ""
 
     payload: dict[str, Any] = {
         "key": key,
@@ -1414,6 +1095,11 @@ def analyze_pin(key: str, body: AnalyzeRequest | None = None, force: bool = Fals
         "请分析以下 Jira issue，并输出指定 JSON：\n"
         + json.dumps(payload, ensure_ascii=False)
     )
+    return None, text_hash, user_prompt
+
+
+def _analysis_request(user_prompt: str, *, stream: bool) -> tuple[str, dict[str, str], dict[str, Any]]:
+    """Build URL/headers/payload for the analysis LLM call (JSON-mode)."""
     api_key = os.environ.get("DEEPSEEK_KEY") or os.environ.get("DEEPSEEK_API_KEY")
     if not api_key:
         raise HTTPException(500, "DEEPSEEK_KEY env var is required for LLM analysis")
@@ -1429,14 +1115,153 @@ def analyze_pin(key: str, body: AnalyzeRequest | None = None, force: bool = Fals
         ],
         "response_format": {"type": "json_object"},
     }
+    if stream:
+        req_payload["stream"] = True
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+    if stream:
+        headers["Accept"] = "text/event-stream"
+    return url, headers, req_payload
+
+
+def _finalize_analysis(key: str, content: str, text_hash: str) -> dict[str, Any]:
+    """Parse the model's JSON, normalise fields/labels, persist to cache."""
+    if not content:
+        raise HTTPException(502, "LLM response empty content")
+    try:
+        obj = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(502, f"LLM returned invalid JSON: {exc}") from exc
+    if not isinstance(obj, dict):
+        raise HTTPException(502, "LLM returned non-object JSON")
+    result: dict[str, Any] = {}
+    for k in ANALYSIS_KEYS:
+        v = _coerce_field_text(obj.get(k))
+        result[k] = v if v else "暂无描述"
+    if _LABEL_MODULES:
+        result["labels"] = normalize_labels(obj.get("labels"), _LABEL_MODULES, _LABEL_NATURES)
+
+    _PIN_CACHE.setdefault(key, {})["analysis"] = {"result": result, "ts": time.time(), "hash": text_hash}
+    _save_pin_cache()
+    return result
+
+
+_JSON_SIMPLE_ESCAPES = {
+    '"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t",
+}
+
+
+def _partial_json_strings(buf: str, keys: tuple[str, ...]) -> dict[str, str]:
+    """Extract top-level string values for ``keys`` from a possibly-truncated JSON object.
+
+    Used to drive the typewriter effect: as the model streams a JSON object,
+    we want to show each field's text as it grows, including the string that
+    is currently open (unterminated). Only string values are returned; a field
+    whose value is an array/object/number is left out and appears when the
+    final ``json.loads`` runs. A trailing lone backslash (escape split across
+    chunks) is dropped until the next chunk completes it.
+    """
+    out: dict[str, str] = {}
+    n = len(buf)
+    i = 0
+    depth = 0
+
+    def read_string(pos: int) -> tuple[str, int, bool]:
+        """Read a JSON string whose opening quote is at ``pos``.
+
+        Returns ``(decoded, next_index, closed)``.
+        """
+        j = pos + 1
+        chars: list[str] = []
+        while j < n:
+            c = buf[j]
+            if c == '"':
+                return "".join(chars), j + 1, True
+            if c == "\\":
+                if j + 1 >= n:
+                    break  # escape split across chunks; wait for more
+                e = buf[j + 1]
+                if e == "u":
+                    if j + 6 > n:
+                        break
+                    try:
+                        chars.append(chr(int(buf[j + 2 : j + 6], 16)))
+                    except ValueError:
+                        pass
+                    j += 6
+                    continue
+                chars.append(_JSON_SIMPLE_ESCAPES.get(e, e))
+                j += 2
+                continue
+            chars.append(c)
+            j += 1
+        return "".join(chars), n, False
+
+    def skip_ws(pos: int) -> int:
+        while pos < n and buf[pos] in " \t\r\n":
+            pos += 1
+        return pos
+
+    while i < n:
+        c = buf[i]
+        if c == "{" or c == "[":
+            depth += 1
+            i += 1
+            continue
+        if c == "}" or c == "]":
+            depth -= 1
+            i += 1
+            continue
+        if c == '"':
+            key, i, closed = read_string(i)
+            if not closed:
+                break
+            if depth != 1:
+                continue
+            j = skip_ws(i)
+            if j >= n or buf[j] != ":":
+                continue  # a string value at depth 1 we don't care about
+            j = skip_ws(j + 1)
+            if j >= n:
+                break
+            if buf[j] == '"':
+                val, i, _closed = read_string(j)
+                if key in keys:
+                    out[key] = val
+                continue
+            # Non-string value: skip it (nested container or scalar) so we
+            # don't mistake its inner strings for top-level keys.
+            if buf[j] in "{[":
+                i = j  # let the main loop track depth for the container
+                continue
+            k = j
+            while k < n and buf[k] not in ",}]":
+                k += 1
+            i = k
+            continue
+        i += 1
+    return out
+
+
+@app.post("/api/pins/{key}/analyze")
+def analyze_pin(key: str, body: AnalyzeRequest | None = None, force: bool = False) -> dict[str, Any]:
+    """Run LLM analysis for a single PIN.
+
+    Results are cached to ``web/cache/pin_cache.json`` (TTL 7 days) under
+    ``_PIN_CACHE[key]["analysis"]``. Pass ``?force=true`` to bypass the cache
+    and refresh (Re-analyze button).
+    """
+    cached, text_hash, user_prompt = _prepare_analysis(key, body, force)
+    if cached is not None:
+        return cached
+    url, headers, req_payload = _analysis_request(user_prompt, stream=False)
     try:
         data = request_json(
             url,
             method="POST",
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}",
-            },
+            headers=headers,
             data=req_payload,
             insecure_env_var="PIN_REPORT_INSECURE_SSL",
         )
@@ -1451,22 +1276,82 @@ def analyze_pin(key: str, body: AnalyzeRequest | None = None, force: bool = Fals
     if not choices:
         raise HTTPException(502, "LLM response missing choices")
     content = (choices[0].get("message") or {}).get("content") or ""
-    if not content:
-        raise HTTPException(502, "LLM response empty content")
-    try:
-        obj = json.loads(content)
-    except json.JSONDecodeError as exc:
-        raise HTTPException(502, f"LLM returned invalid JSON: {exc}") from exc
-    result: dict[str, Any] = {}
-    for k in ANALYSIS_KEYS:
-        v = _coerce_field_text(obj.get(k))
-        result[k] = v if v else "暂无描述"
-    if _LABEL_MODULES:
-        result["labels"] = normalize_labels(obj.get("labels"), _LABEL_MODULES, _LABEL_NATURES)
+    return _finalize_analysis(key, content, text_hash)
 
-    _PIN_CACHE.setdefault(key, {})["analysis"] = {"result": result, "ts": time.time(), "hash": text_hash}
-    _save_pin_cache()
-    return result
+
+@app.post("/api/pins/{key}/analyze/stream")
+def analyze_pin_stream(key: str, body: AnalyzeRequest | None = None, force: bool = False):
+    """Streaming variant of ``analyze_pin`` (NDJSON) for the typewriter effect.
+
+    Lines:
+      {"cached": true, "result": {...}}   cache hit — no LLM call, single line
+      {"partial": {"problem": "...", ...}} growing snapshot of the string fields
+                                          parsed so far from the model's JSON
+      {"result": {...}}                   final normalised result (also cached)
+      {"error": "..."}                    LLM/parse failure after headers were sent
+    Errors before the first byte (404 PIN, missing key) are normal HTTP errors.
+    """
+    cached, text_hash, user_prompt = _prepare_analysis(key, body, force)
+    if cached is not None:
+        return {"cached": True, "result": cached}
+    url, headers, req_payload = _analysis_request(user_prompt, stream=True)
+    req = Request(url, data=json.dumps(req_payload).encode("utf-8"), method="POST", headers=headers)
+    ctx = ssl_context("PIN_REPORT_INSECURE_SSL")
+    try:
+        resp = urlopen(req, context=ctx, timeout=_LLM_TIMEOUT)
+    except HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", errors="replace")[-1000:]
+        except Exception:
+            pass
+        raise HTTPException(502, f"LLM analysis failed: {detail or exc.reason}") from exc
+    except Exception as exc:
+        raise HTTPException(502, f"LLM analysis connect failed: {exc}") from exc
+
+    def gen():
+        buf = ""
+        last_sent: dict[str, str] = {}
+        try:
+            for raw in resp:
+                line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+                if not line.startswith("data:"):
+                    continue
+                data_str = line[len("data:"):].strip()
+                if data_str == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(data_str)
+                except json.JSONDecodeError:
+                    continue
+                choices = obj.get("choices") or []
+                if not choices:
+                    continue
+                delta = (choices[0].get("delta") or {}).get("content")
+                if not delta:
+                    continue
+                buf += delta
+                partial = _partial_json_strings(buf, ANALYSIS_KEYS)
+                if partial != last_sent:
+                    last_sent = partial
+                    yield json.dumps({"partial": partial}, ensure_ascii=False) + "\n"
+            result = _finalize_analysis(key, buf.strip(), text_hash)
+            yield json.dumps({"result": result}, ensure_ascii=False) + "\n"
+        except HTTPException as exc:
+            yield json.dumps({"error": str(exc.detail)}, ensure_ascii=False) + "\n"
+        except Exception as exc:  # noqa: BLE001 - surface to client, never crash
+            yield json.dumps({"error": str(exc)}, ensure_ascii=False) + "\n"
+        finally:
+            try:
+                resp.close()
+            except Exception:
+                pass
+
+    return StreamingResponse(
+        gen(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/api/pins/{key}/comments")
@@ -1567,223 +1452,6 @@ def add_comment(key: str, payload: CommentCreate) -> dict[str, Any]:
             exc.code, f"Jira comment add failed: {detail or exc.reason}"
         ) from exc
     return {"ok": True, "comment": _format_comment(data or {})}
-
-
-class CommentDraftRequest(BaseModel):
-    prompt: str
-    recent_comments: list[dict[str, Any]] | None = None
-    analysis: dict[str, str] | None = None
-
-
-@app.post("/api/pins/{key}/comments/ai-draft")
-def draft_comment(key: str, payload: CommentDraftRequest) -> dict[str, Any]:
-    user_instruction = (payload.prompt or "").strip()
-    if not user_instruction:
-        raise HTTPException(400, "Prompt cannot be empty")
-    issue = _jira_get_issue(key, ["summary", "status", "priority"])
-    f = (issue.get("fields") or {}) if issue else {}
-    summary_ctx = {
-        "key": key,
-        "status": ((f.get("status") or {}).get("name") or ""),
-        "urgency": ((f.get("priority") or {}).get("name") or ""),
-        "summary": f.get("summary") or "",
-        "analysis": payload.analysis or {},
-    }
-    user_prompt = _build_ai_draft_user_prompt(
-        summary_ctx, user_instruction, payload.recent_comments
-    )
-    text = _llm_chat(AI_DRAFT_SYSTEM_PROMPT, user_prompt)
-    if not text:
-        raise HTTPException(502, "LLM returned empty content")
-    return {"text": text}
-
-
-@app.post("/api/pins/{key}/comments/ai-draft/stream")
-def draft_comment_stream(key: str, payload: CommentDraftRequest):
-    """Stream the AI draft as NDJSON.
-
-    Each line is a JSON object: {"delta": "..."} for tokens, {"done": true}
-    when complete, {"error": "..."} if the LLM call fails mid-stream. Errors
-    raised before any token (e.g. missing API key, bad payload) surface as
-    normal HTTP errors via raise HTTPException.
-    """
-    user_instruction = (payload.prompt or "").strip()
-    if not user_instruction:
-        raise HTTPException(400, "Prompt cannot be empty")
-    issue = _jira_get_issue(key, ["summary", "status", "priority"])
-    f = (issue.get("fields") or {}) if issue else {}
-    summary_ctx = {
-        "key": key,
-        "status": ((f.get("status") or {}).get("name") or ""),
-        "urgency": ((f.get("priority") or {}).get("name") or ""),
-        "summary": f.get("summary") or "",
-        "analysis": payload.analysis or {},
-    }
-    user_prompt = _build_ai_draft_user_prompt(
-        summary_ctx, user_instruction, payload.recent_comments
-    )
-
-    def gen():
-        try:
-            for delta in _llm_chat_stream(AI_DRAFT_SYSTEM_PROMPT, user_prompt):
-                if not delta:
-                    continue
-                yield json.dumps({"delta": delta}, ensure_ascii=False) + "\n"
-            yield json.dumps({"done": True}) + "\n"
-        except HTTPException as exc:
-            yield json.dumps({"error": str(exc.detail)}, ensure_ascii=False) + "\n"
-        except Exception as exc:  # noqa: BLE001 - surface to client, never crash
-            yield json.dumps({"error": str(exc)}, ensure_ascii=False) + "\n"
-
-    return StreamingResponse(
-        gen(),
-        media_type="application/x-ndjson",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
-
-
-def _get_assessment_form(key: str, form_id: str) -> dict[str, Any]:
-    """Fetch a ProForma form, mapping Jira errors to clean HTTPExceptions."""
-    try:
-        return get_issue_form(_cloud_id(), key, form_id, _jira_auth())
-    except HTTPError as exc:
-        detail = ""
-        try:
-            detail = exc.read().decode("utf-8", errors="replace")[-500:]
-        except Exception:
-            pass
-        raise HTTPException(
-            exc.code, _jira_error_message(detail, exc.reason or "form fetch failed")
-        ) from exc
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(502, f"Form fetch failed: {exc}") from exc
-
-
-@app.post("/api/pins/{key}/forms/{form_id}/assessment")
-def draft_assessment(key: str, form_id: str) -> dict[str, Any]:
-    """Return the editable Technical Assessment Form model (no LLM, no writes).
-
-    Required fields in form order with options/defaults, branch gating, and each
-    field's current answer (``value``) so a submitted form can render read-only.
-    The 'Add a short explanation' draft is generated separately, on demand, via
-    the /assessment/explain endpoint.
-    """
-    if not (_profile().get("base_url") or "").rstrip("/"):
-        raise HTTPException(500, "Jira base_url missing from profile")
-    form_detail = _get_assessment_form(key, form_id)
-    answers = (form_detail.get("state") or {}).get("answers") or {}
-    fields = _assessment_model(key, form_detail.get("design") or {}, answers)
-    return {
-        "fields": fields,
-        "explanation_label": ASSESSMENT_EXPLANATION_LABEL,
-    }
-
-
-@app.post("/api/pins/{key}/forms/{form_id}/assessment/explain")
-def explain_assessment(key: str, form_id: str) -> dict[str, Any]:
-    """Draft the 'Add a short explanation' text from the PIN's comments only."""
-    try:
-        comments = list_comments(key).get("items") or []
-    except Exception:
-        comments = []
-    user_prompt = _build_assessment_explain_prompt(comments)
-    if not user_prompt:
-        return {"explanation": ""}
-    # Flash is the fast, light-reasoning model — well-suited to this 1-3
-    # sentence task and much quicker than the default (heavy-reasoning) model.
-    explanation = _llm_chat(
-        ASSESSMENT_EXPLAIN_SYSTEM_PROMPT,
-        user_prompt,
-        max_tokens=600,
-        model=DEFAULT_TRANSLATE_MODEL,
-    )
-    return {"explanation": explanation}
-
-
-class AssessmentSubmitRequest(BaseModel):
-    # qid -> value: string for text/date, or list[str] of option ids for
-    # single/multi choice (single carries a one-element list).
-    answers: dict[str, Any]
-    submit: bool = True
-
-
-def _format_assessment_answer(kind: str, value: Any) -> dict[str, Any] | None:
-    """Map a panel value to the ProForma answer shape for its question kind."""
-    if kind in ("single", "multi"):
-        ids = value if isinstance(value, list) else ([value] if value else [])
-        ids = [str(v) for v in ids if str(v).strip()]
-        if not ids:
-            return None
-        return {"text": "", "choices": ids}
-    if kind == "date":
-        v = str(value or "").strip()
-        return {"date": v} if v else None
-    v = str(value or "").strip()
-    return {"text": v} if v else None
-
-
-@app.post("/api/pins/{key}/forms/{form_id}/assessment/submit")
-def submit_assessment(key: str, form_id: str, payload: AssessmentSubmitRequest) -> dict[str, Any]:
-    """Write the assessment answers to the ProForma form, then submit it.
-
-    Sends answers only for the currently-applicable fields (the active branch).
-    Existing answers on the form are preserved; ours overlay them. Submission is
-    validated server-side by Jira — validation failures surface as 4xx.
-    """
-    if not (_profile().get("base_url") or "").rstrip("/"):
-        raise HTTPException(500, "Jira base_url missing from profile")
-    auth = _jira_auth()
-    cloud_id = _cloud_id()
-    form_detail = _get_assessment_form(key, form_id)
-    design = form_detail.get("design") or {}
-    questions = design.get("questions") or {}
-
-    # Build the answers payload: start from existing answers, overlay ours.
-    answers: dict[str, Any] = dict((form_detail.get("state") or {}).get("answers") or {})
-    for qid, value in (payload.answers or {}).items():
-        q = questions.get(str(qid)) or questions.get(qid)
-        if not isinstance(q, dict):
-            continue
-        kind = _ASSESSMENT_KIND.get(q.get("type") or "", "text")
-        formatted = _format_assessment_answer(kind, value)
-        if formatted is not None:
-            answers[str(qid)] = formatted
-
-    try:
-        save_issue_form_answers(cloud_id, key, form_id, answers, auth)
-    except HTTPError as exc:
-        detail = ""
-        try:
-            detail = exc.read().decode("utf-8", errors="replace")[-800:]
-        except Exception:
-            pass
-        raise HTTPException(exc.code, _jira_error_message(detail, "form save failed")) from exc
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(502, f"Form save failed: {exc}") from exc
-
-    if not payload.submit:
-        return {"ok": True, "submitted": False, "key": key, "form_id": form_id}
-
-    try:
-        result = submit_issue_form(cloud_id, key, form_id, auth)
-    except HTTPError as exc:
-        detail = ""
-        try:
-            detail = exc.read().decode("utf-8", errors="replace")[-800:]
-        except Exception:
-            pass
-        # 400 here is typically "required answers missing" validation.
-        raise HTTPException(exc.code, _jira_error_message(detail, "form submit failed")) from exc
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(502, f"Form submit failed: {exc}") from exc
-
-    return {
-        "ok": True,
-        "submitted": True,
-        "status": result.get("status") or "",
-        "key": key,
-        "form_id": form_id,
-    }
 
 
 @app.get("/api/pins/{key}/transitions")

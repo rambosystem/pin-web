@@ -14,7 +14,7 @@ local caches or intermediate scripts.
   - `Intake Form` — click **Load Intake Form** to pull the ProForma form live
     from Jira; fields render inline.
   - `Raw` — clean form text (after loading the form).
-- **Comments** panel — live from Jira; supports AI-assisted draft via DeepSeek.
+- **Comments** panel — live from Jira; reply / internal note (no AI drafting — that workflow lives in Claude Code).
 
 No Jira tokens ever touch the browser. All API calls originate from the
 FastAPI backend using your local `.env` credentials.
@@ -96,8 +96,6 @@ npm run dev
 | GET    | `/api/pins/{key}/forms/submitted`         | List submitted ProForma forms with cleaned text                           |
 | GET    | `/api/pins/{key}/comments`                | List Jira comments                                                        |
 | POST   | `/api/pins/{key}/comments`                | Post a new comment                                                        |
-| POST   | `/api/pins/{key}/comments/ai-draft`       | Non-streaming AI comment draft                                            |
-| POST   | `/api/pins/{key}/comments/ai-draft/stream`| Streaming AI comment draft (NDJSON)                                       |
 | GET    | `/api/users/search`                       | Search Jira users (for @mention auto-complete)                            |
 | GET    | `/api/profile`                            | base_url / account_id / email from `config/assets/global/profile.yaml`   |
 

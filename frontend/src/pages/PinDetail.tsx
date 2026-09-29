@@ -85,6 +85,8 @@ export function PinDetail() {
   const [formResult, setFormResult] = useState<IntakeFormResult | null>(null);
   const [analyzeBusy, setAnalyzeBusy] = useState(false);
   const [analysis, setAnalysis] = useState<PinAnalysisFields | null>(null);
+  /** Growing snapshot of fields while the LLM streams; null when idle. */
+  const [analysisPartial, setAnalysisPartial] = useState<Partial<PinAnalysisFields> | null>(null);
   const [labels, setLabels] = useState<PinAnalysisLabels | null>(null);
   const [transitions, setTransitions] = useState<JiraTransition[]>([]);
   const [transitionsBusy, setTransitionsBusy] = useState(false);
@@ -170,19 +172,23 @@ export function PinDetail() {
 
   async function runAnalysis(force = false, formRes?: IntakeFormResult | null) {
     setAnalyzeBusy(true);
+    setAnalysisPartial(null);
     try {
       const formToUse = formRes ?? formResult;
       const cleanText =
         formToUse && formToUse.available
           ? formToUse.clean_requirements_text
           : undefined;
-      const result = await api.analyzePin(key, cleanText, force);
+      const result = await api.analyzePinStream(key, cleanText, force, (partial) => {
+        setAnalysisPartial(partial);
+      });
       const { labels: lbl, ...fields } = result;
       setAnalysis(fields);
       setLabels(lbl ?? null);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
+      setAnalysisPartial(null);
       setAnalyzeBusy(false);
     }
   }
@@ -653,13 +659,13 @@ export function PinDetail() {
             labels={labels}
             onUpdate={setAnalysis}
             busy={analyzeBusy}
+            streaming={analysisPartial}
           />
         </section>
       </div>
 
       <CommentsPanel
         pinKey={data.key}
-        analysis={analysis ?? undefined}
         defaultMention={
           data.reporter_account_id && data.reporter
             ? {

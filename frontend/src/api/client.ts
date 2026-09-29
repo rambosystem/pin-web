@@ -1,8 +1,5 @@
 import type {
   AnalyzeResult,
-  AssessmentDraftResponse,
-  AssessmentExplainResponse,
-  AssessmentSubmitResponse,
   AttachedFormsResponse,
   CachedAnalysisResponse,
   IntakeFormResult,
@@ -55,6 +52,76 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ clean_requirements_text: cleanRequirementsText ?? null }),
     }),
+  /**
+   * Streaming analysis (typewriter). `onPartial` receives a growing snapshot
+   * of the string fields as the model emits them; resolves with the final
+   * normalised result (same shape as `analyzePin`). A cache hit resolves
+   * immediately without any partial callbacks.
+   */
+  analyzePinStream: async (
+    key: string,
+    cleanRequirementsText: string | undefined,
+    force: boolean,
+    onPartial: (fields: Partial<PinAnalysisFields>) => void,
+    signal?: AbortSignal
+  ): Promise<AnalyzeResult> => {
+    const res = await fetch(
+      `${BASE}/pins/${encodeURIComponent(key)}/analyze/stream?force=${force}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clean_requirements_text: cleanRequirementsText ?? null }),
+        signal,
+      }
+    );
+    if (!res.ok) {
+      let detail = "";
+      try {
+        const body = await res.json();
+        detail = body.detail || JSON.stringify(body);
+      } catch {
+        detail = await res.text().catch(() => "");
+      }
+      throw new Error(`HTTP ${res.status}: ${detail || res.statusText}`);
+    }
+    if (!res.body) throw new Error("Stream response has no body");
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    const holder: { final: AnalyzeResult | null } = { final: null };
+    const consume = (raw: string) => {
+      const line = raw.trim();
+      if (!line) return;
+      let obj: {
+        cached?: boolean;
+        partial?: Partial<PinAnalysisFields>;
+        result?: AnalyzeResult;
+        error?: string;
+      };
+      try {
+        obj = JSON.parse(line);
+      } catch {
+        return;
+      }
+      if (obj.error) throw new Error(obj.error);
+      if (obj.result) holder.final = obj.result;
+      else if (obj.partial) onPartial(obj.partial);
+    };
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let idx: number;
+      while ((idx = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 1);
+        consume(line);
+      }
+    }
+    if (buffer) consume(buffer);
+    if (!holder.final) throw new Error("Analysis stream ended without a result");
+    return holder.final;
+  },
   getCachedAnalysis: async (key: string, cleanRequirementsText?: string) => {
     const params = new URLSearchParams();
     if (cleanRequirementsText !== undefined) {
@@ -107,93 +174,4 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ transition_id: transitionId }),
     }),
-  draftAiReply: (
-    key: string,
-    prompt: string,
-    recentComments?: { author: string; body_text: string; created: string }[],
-    analysis?: PinAnalysisFields
-  ) =>
-    http<{ text: string }>(
-      `/pins/${encodeURIComponent(key)}/comments/ai-draft`,
-      {
-        method: "POST",
-        body: JSON.stringify({ prompt, recent_comments: recentComments, analysis }),
-      }
-    ),
-  draftAiReplyStream: async (
-    key: string,
-    prompt: string,
-    recentComments: { author: string; body_text: string; created: string }[] | undefined,
-    onDelta: (text: string) => void,
-    signal?: AbortSignal,
-    analysis?: PinAnalysisFields
-  ): Promise<void> => {
-    const res = await fetch(
-      `${BASE}/pins/${encodeURIComponent(key)}/comments/ai-draft/stream`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt, recent_comments: recentComments, analysis }),
-        signal,
-      }
-    );
-    if (!res.ok) {
-      let detail = "";
-      try {
-        const body = await res.json();
-        detail = body.detail || JSON.stringify(body);
-      } catch {
-        detail = await res.text().catch(() => "");
-      }
-      throw new Error(`HTTP ${res.status}: ${detail || res.statusText}`);
-    }
-    if (!res.body) throw new Error("Stream response has no body");
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    const consume = (raw: string) => {
-      const line = raw.trim();
-      if (!line) return;
-      let obj: { delta?: string; done?: boolean; error?: string };
-      try {
-        obj = JSON.parse(line);
-      } catch {
-        return;
-      }
-      if (obj.error) throw new Error(obj.error);
-      if (typeof obj.delta === "string") onDelta(obj.delta);
-    };
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let idx: number;
-      while ((idx = buffer.indexOf("\n")) >= 0) {
-        const line = buffer.slice(0, idx);
-        buffer = buffer.slice(idx + 1);
-        consume(line);
-      }
-    }
-    if (buffer) consume(buffer);
-  },
-  assessmentDraft: (key: string, formId: string) =>
-    http<AssessmentDraftResponse>(
-      `/pins/${encodeURIComponent(key)}/forms/${encodeURIComponent(formId)}/assessment`,
-      { method: "POST" }
-    ),
-  assessmentExplain: (key: string, formId: string) =>
-    http<AssessmentExplainResponse>(
-      `/pins/${encodeURIComponent(key)}/forms/${encodeURIComponent(formId)}/assessment/explain`,
-      { method: "POST" }
-    ),
-  submitAssessment: (
-    key: string,
-    formId: string,
-    answers: Record<string, string | string[]>,
-    submit = true
-  ) =>
-    http<AssessmentSubmitResponse>(
-      `/pins/${encodeURIComponent(key)}/forms/${encodeURIComponent(formId)}/assessment/submit`,
-      { method: "POST", body: JSON.stringify({ answers, submit }) }
-    ),
 };

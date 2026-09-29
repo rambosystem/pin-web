@@ -135,50 +135,6 @@ export interface AttachedFormsResponse {
   items: AttachedForm[];
 }
 
-export interface AssessmentOption {
-  id: string;
-  label: string;
-}
-
-/** Branch gating: this field applies only when `by`'s answer is in `values`. */
-export interface AssessmentGate {
-  by: string;
-  values: string[];
-}
-
-/** One required field of the Technical Assessment Form. */
-export interface AssessmentField {
-  id: string;
-  label: string;
-  kind: "single" | "multi" | "text" | "date";
-  options: AssessmentOption[];
-  /** Pre-selected option label for choice fields ("" for text/date). */
-  default: string;
-  gate: AssessmentGate | null;
-  /** True for the field the AI fills (Add a short explanation). */
-  ai: boolean;
-  /** Current answer on the form: choice ids / text / date. For read-only view. */
-  value: string | string[];
-}
-
-export interface AssessmentDraftResponse {
-  fields: AssessmentField[];
-  explanation_label: string;
-}
-
-export interface AssessmentExplainResponse {
-  /** AI-written "Add a short explanation", grounded only in the PIN's comments. */
-  explanation: string;
-}
-
-export interface AssessmentSubmitResponse {
-  ok: boolean;
-  submitted: boolean;
-  status?: string;
-  key: string;
-  form_id: string;
-}
-
 export interface SubmittedFormSummary {
   form_id: string;
   form_name: string;

@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Lock, MessageSquare, RefreshCw, Send, Sparkles, Users, X } from "lucide-react";
+import { Lock, MessageSquare, RefreshCw, Send, Users } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/api/client";
-import type { JiraComment, JiraUser, PinAnalysisFields } from "@/api/types";
+import type { JiraComment, JiraUser } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Textarea } from "@/components/ui/textarea";
 import { MarkdownLite } from "@/components/MarkdownLite";
 import { MentionEditor, type MentionEditorHandle } from "@/components/MentionEditor";
 import { cn } from "@/lib/utils";
@@ -27,12 +26,10 @@ function formatTime(iso: string): string {
 
 export function CommentsPanel({
   pinKey,
-  analysis,
   defaultMention,
   onPreviewImage,
 }: {
   pinKey: string;
-  analysis?: PinAnalysisFields;
   defaultMention?: JiraUser;
   onPreviewImage?: (src: string) => void;
 }) {
@@ -40,9 +37,6 @@ export function CommentsPanel({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [posting, setPosting] = useState(false);
-  const [showAi, setShowAi] = useState(false);
-  const [aiPrompt, setAiPrompt] = useState("");
-  const [generating, setGenerating] = useState(false);
   const [isInternal, setIsInternal] = useState(false);
   const [editorEmpty, setEditorEmpty] = useState(true);
 
@@ -94,48 +88,6 @@ export function CommentsPanel({
     }
   }
 
-  async function generate() {
-    const prompt = aiPrompt.trim();
-    if (!prompt || generating) return;
-    setGenerating(true);
-    editorRef.current?.setText("");
-    const tid = toast.loading("Drafting reply with AI...");
-    try {
-      const recent = items.slice(-10).map((c) => ({
-        author: c.author,
-        body_text: c.body_text,
-        created: c.created,
-      }));
-      let accumulated = "";
-      await api.draftAiReplyStream(
-        pinKey,
-        prompt,
-        recent,
-        (delta) => {
-          accumulated += delta;
-          editorRef.current?.setText(accumulated);
-        },
-        undefined,
-        analysis
-      );
-      if (!accumulated.trim()) {
-        throw new Error("LLM returned empty content");
-      }
-      toast.success("Draft ready – review then Reply", { id: tid });
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e), { id: tid });
-    } finally {
-      setGenerating(false);
-    }
-  }
-
-  function onAiPromptKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-      e.preventDefault();
-      void generate();
-    }
-  }
-
   return (
     <Card className="flex flex-col max-h-[calc(100vh-220px)]">
       <CardHeader className="flex flex-row items-start justify-between space-y-0 shrink-0">
@@ -166,15 +118,13 @@ export function CommentsPanel({
         <div className="space-y-2 shrink-0">
           <MentionEditor
             ref={editorRef}
-            disabled={posting || generating}
+            disabled={posting}
             internal={isInternal}
             defaultUser={defaultMention}
             onSubmit={() => void submit()}
             onEmptyChange={setEditorEmpty}
             placeholder={
-              generating
-                ? "AI is drafting…"
-                : isInternal
+              isInternal
                 ? "Internal note (visible to agents only)… (Ctrl/Cmd + Enter to send)"
                 : "Reply to customer… Type @ to mention. (Ctrl/Cmd + Enter to send)"
             }
@@ -206,21 +156,9 @@ export function CommentsPanel({
             </div>
             <div className="flex items-center gap-2">
               <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setShowAi((v) => !v)}
-                disabled={posting}
-                title="Draft with AI"
-                className={cn(showAi && "ring-1 ring-primary/40")}
-              >
-                <Sparkles className="h-4 w-4" />
-                AI
-              </Button>
-              <Button
                 size="sm"
                 onClick={() => void submit()}
-                disabled={posting || generating || editorEmpty}
+                disabled={posting || editorEmpty}
                 className={cn(isInternal && "bg-amber-500 hover:bg-amber-600 text-white")}
               >
                 <Send className={posting ? "animate-pulse" : ""} />
@@ -228,47 +166,6 @@ export function CommentsPanel({
               </Button>
             </div>
           </div>
-
-          {showAi && (
-            <div className="rounded-md border border-primary/30 bg-primary/5 p-2.5 space-y-2">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-1.5 text-xs font-medium">
-                  <Sparkles className="h-3.5 w-3.5 text-primary" />
-                  AI draft prompt
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setShowAi(false)}
-                  className="text-muted-foreground hover:text-foreground"
-                  aria-label="Close AI prompt"
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              </div>
-              <Textarea
-                value={aiPrompt}
-                onChange={(e) => setAiPrompt(e.target.value)}
-                onKeyDown={onAiPromptKeyDown}
-                rows={2}
-                disabled={generating}
-                placeholder="e.g. Ask for clarification on urgency and target customers; suggest next steps..."
-                className="text-sm bg-background"
-              />
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[11px] text-muted-foreground">
-                  Generated text fills the reply box for review.
-                </span>
-                <Button
-                  size="sm"
-                  onClick={() => void generate()}
-                  disabled={generating || !aiPrompt.trim()}
-                >
-                  <Sparkles className={generating ? "animate-pulse" : ""} />
-                  {generating ? "Generating…" : "Generate"}
-                </Button>
-              </div>
-            </div>
-          )}
         </div>
 
         <div className="flex-1 min-h-0 overflow-y-auto -mr-2 pr-2 space-y-3">

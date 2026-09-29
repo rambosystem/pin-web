@@ -37,12 +37,19 @@ export function AnalysisEditor({
   labels,
   onUpdate,
   busy = false,
+  streaming = null,
 }: {
   pinKey: string;
   initial: Partial<PinAnalysisFields> | undefined;
   labels?: PinAnalysisLabels | null;
   onUpdate?: (v: PinAnalysisFields) => void;
   busy?: boolean;
+  /**
+   * Growing snapshot of the fields while the LLM streams (typewriter mode).
+   * Keys appear in the order the model writes them; the last key is the one
+   * currently being typed. Null when not streaming.
+   */
+  streaming?: Partial<PinAnalysisFields> | null;
 }) {
   const [values, setValues] = useState<PinAnalysisFields>({ ...emptyFields(), ...(initial || {}) });
 
@@ -55,6 +62,9 @@ export function AnalysisEditor({
   }, [initial?.form_request, initial?.problem, initial?.background, initial?.impact, initial?.expectation]);
 
   const hasContent = Object.values(values).some((v) => v.trim());
+  const streamingActive = busy && streaming !== null;
+  const streamKeys = streamingActive ? (Object.keys(streaming) as (keyof PinAnalysisFields)[]) : [];
+  const typingKey = streamKeys.length ? streamKeys[streamKeys.length - 1] : null;
 
   return (
     <Card>
@@ -67,8 +77,43 @@ export function AnalysisEditor({
         </p>
       </CardHeader>
       <CardContent className="space-y-4">
-        {hasContent && labels && <LabelChips labels={labels} />}
-        {!hasContent && busy && (
+        {streamingActive && (
+          <div className="space-y-5 py-2">
+            <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin text-primary" />
+              <span>Generating analysis with LLM…</span>
+            </div>
+            {FIELDS.map(({ key, label, hint }) => {
+              const text = streaming[key];
+              if (text === undefined) {
+                return (
+                  <div key={key} className="space-y-1.5">
+                    <Label className="text-sm font-medium text-muted-foreground/80">{label}</Label>
+                    <div className="space-y-2 rounded-md border border-input bg-muted/30 px-3 py-2.5">
+                      <Skeleton className="h-3 w-full" />
+                      <Skeleton className="h-3 w-[92%]" />
+                      <Skeleton className="h-3 w-[78%]" />
+                    </div>
+                  </div>
+                );
+              }
+              const isTyping = key === typingKey;
+              return (
+                <div key={key} className="space-y-1.5">
+                  <div className="flex items-baseline justify-between">
+                    <Label className="text-sm font-medium">{label}</Label>
+                    <span className="text-[11px] text-muted-foreground">{hint}</span>
+                  </div>
+                  <div className="rounded-md border border-input bg-muted/30 px-3 py-2 min-h-[2.5rem]">
+                    <MarkdownLite text={isTyping ? `${text}▍` : text} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {!streamingActive && hasContent && labels && <LabelChips labels={labels} />}
+        {!streamingActive && !hasContent && busy && (
           <div className="space-y-5 py-2">
             <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin text-primary" />
@@ -95,7 +140,7 @@ export function AnalysisEditor({
             No analysis yet — click <strong>Analyze</strong> to run.
           </div>
         )}
-        {hasContent && FIELDS.map(({ key, label, hint }) => {
+        {!streamingActive && hasContent && FIELDS.map(({ key, label, hint }) => {
           const v = (values[key] || "").trim();
           if (!v) return null;
           return (
