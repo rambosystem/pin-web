@@ -59,14 +59,7 @@ export default {
         sm: "calc(var(--radius) - 4px)",
       },
       fontFamily: {
-        sans: [
-          "-apple-system",
-          "BlinkMacSystemFont",
-          "Segoe UI",
-          "PingFang SC",
-          "Microsoft YaHei",
-          "sans-serif",
-        ],
+        sans: ["Inter", "Inter-Regular", "Helvetica", "Arial", "PingFang SC", "Microsoft YaHei", "sans-serif"],
       },
       keyframes: {
         "accordion-down": {
