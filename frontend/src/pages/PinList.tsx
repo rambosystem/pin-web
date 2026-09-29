@@ -38,7 +38,7 @@ function uniqueValues(items: PinSummary[], pick: (p: PinSummary) => string) {
   return Array.from(set).sort();
 }
 
-type SortKey = "key" | "status" | "urgency" | "statusUrgency" | "reporter" | "created";
+type SortKey = "key" | "status" | "urgency" | "reporter" | "created";
 type SortDir = "asc" | "desc";
 
 const URGENCY_RANK: Record<string, number> = {
@@ -67,11 +67,6 @@ function keyNum(k: string): number {
 }
 
 function compareBy(a: PinSummary, b: PinSummary, key: SortKey): number {
-  if (key === "statusUrgency") {
-    return (
-      compareBy(a, b, "status") || compareBy(a, b, "urgency")
-    );
-  }
   if (key === "urgency") {
     return (URGENCY_RANK[a.urgency] ?? 0) - (URGENCY_RANK[b.urgency] ?? 0);
   }
@@ -91,22 +86,28 @@ function SortButton({
   label,
   active,
   dir,
+  order,
   onClick,
 }: {
   label: string;
   active: boolean;
   dir?: SortDir;
-  onClick: () => void;
+  order?: number;
+  onClick: (multi: boolean) => void;
 }) {
   return (
     <button
       type="button"
-      onClick={onClick}
+      onClick={(e) => onClick(e.shiftKey)}
+      title="Shift+click to add as secondary sort"
       className={`-ml-2 inline-flex h-8 items-center gap-1 rounded-md px-2 text-xs font-medium transition-colors hover:bg-accent hover:text-foreground ${
         active ? "text-foreground" : "text-muted-foreground"
       }`}
     >
       <span>{label}</span>
+      {active && order !== undefined && (
+        <span className="text-[10px] leading-none text-muted-foreground">{order}</span>
+      )}
       {active ? (
         dir === "asc" ? (
           <ArrowUp className="h-3.5 w-3.5" />
@@ -127,8 +128,9 @@ export function PinList() {
   const [urgencies, setUrgencies] = useState<string[]>([]);
   const [reporters, setReporters] = useState<string[]>([]);
   const [dateFilter, setDateFilter] = useState<DateFilterValue | null>(null);
-  const [sortKey, setSortKey] = useState<SortKey>("urgency");
-  const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [sorts, setSorts] = useState<{ key: SortKey; dir: SortDir }[]>([
+    { key: "urgency", dir: "desc" },
+  ]);
 
   const statusOptions = useMemo(() => uniqueValues(items, (p) => p.status), [items]);
   const urgencyOptions = useMemo(() => uniqueValues(items, (p) => p.urgency), [items]);
@@ -163,25 +165,41 @@ export function PinList() {
   const sorted = useMemo(() => {
     const arr = [...filtered];
     arr.sort((a, b) => {
-      const primary = compareBy(a, b, sortKey);
-      if (primary !== 0) return sortDir === "desc" ? -primary : primary;
-      if (sortKey !== "urgency" && sortKey !== "statusUrgency") {
+      for (const { key, dir } of sorts) {
+        const c = compareBy(a, b, key);
+        if (c !== 0) return dir === "desc" ? -c : c;
+      }
+      if (!sorts.some((s) => s.key === "urgency")) {
         const u = compareBy(a, b, "urgency");
         if (u !== 0) return -u;
       }
       return keyNum(b.key) - keyNum(a.key);
     });
     return arr;
-  }, [filtered, sortKey, sortDir]);
+  }, [filtered, sorts]);
 
-  function toggleSort(key: SortKey) {
-    if (sortKey !== key) {
-      setSortKey(key);
-      setSortDir(key === "key" || key === "reporter" ? "asc" : "desc");
-      return;
-    }
-    setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+  function toggleSort(key: SortKey, multi: boolean) {
+    const defaultDir: SortDir = key === "key" || key === "reporter" ? "asc" : "desc";
+    const flip = (d: SortDir): SortDir => (d === "asc" ? "desc" : "asc");
+    setSorts((prev) => {
+      const idx = prev.findIndex((s) => s.key === key);
+      if (multi) {
+        if (idx < 0) return [...prev, { key, dir: defaultDir }];
+        return prev.map((s, i) => (i === idx ? { ...s, dir: flip(s.dir) } : s));
+      }
+      if (prev.length === 1 && idx === 0) return [{ key, dir: flip(prev[0].dir) }];
+      return [{ key, dir: defaultDir }];
+    });
   }
+
+  const sortInfo = (key: SortKey) => {
+    const idx = sorts.findIndex((s) => s.key === key);
+    return {
+      active: idx >= 0,
+      dir: idx >= 0 ? sorts[idx].dir : undefined,
+      order: idx >= 0 && sorts.length > 1 ? idx + 1 : undefined,
+    };
+  };
 
   const hasFilters = statuses.length + urgencies.length + reporters.length > 0 || dateFilter !== null || q.length > 0;
 
@@ -246,19 +264,6 @@ export function PinList() {
                 Reset
               </Button>
             )}
-            <Button
-              variant={sortKey === "statusUrgency" ? "secondary" : "outline"}
-              size="sm"
-              onClick={() => toggleSort("statusUrgency")}
-            >
-              Status + Urgency
-              {sortKey === "statusUrgency" &&
-                (sortDir === "asc" ? (
-                  <ArrowUp className="h-3.5 w-3.5" />
-                ) : (
-                  <ArrowDown className="h-3.5 w-3.5" />
-                ))}
-            </Button>
             <div className="ml-auto text-xs text-muted-foreground">
               {filtered.length} / {items.length}
             </div>
@@ -279,42 +284,37 @@ export function PinList() {
               <TableHead className="w-[110px]">
                 <SortButton
                   label="Key"
-                  active={sortKey === "key"}
-                  dir={sortKey === "key" ? sortDir : undefined}
-                  onClick={() => toggleSort("key")}
+                  {...sortInfo("key")}
+                  onClick={(multi) => toggleSort("key", multi)}
                 />
               </TableHead>
               <TableHead>Summary</TableHead>
               <TableHead className="w-[160px]">
                 <SortButton
                   label="Reporter"
-                  active={sortKey === "reporter"}
-                  dir={sortKey === "reporter" ? sortDir : undefined}
-                  onClick={() => toggleSort("reporter")}
+                  {...sortInfo("reporter")}
+                  onClick={(multi) => toggleSort("reporter", multi)}
                 />
               </TableHead>
               <TableHead className="w-[240px]">
                 <SortButton
                   label="Status"
-                  active={sortKey === "status"}
-                  dir={sortKey === "status" ? sortDir : undefined}
-                  onClick={() => toggleSort("status")}
+                  {...sortInfo("status")}
+                  onClick={(multi) => toggleSort("status", multi)}
                 />
               </TableHead>
               <TableHead className="w-[120px]">
                 <SortButton
                   label="Urgency"
-                  active={sortKey === "urgency"}
-                  dir={sortKey === "urgency" ? sortDir : undefined}
-                  onClick={() => toggleSort("urgency")}
+                  {...sortInfo("urgency")}
+                  onClick={(multi) => toggleSort("urgency", multi)}
                 />
               </TableHead>
               <TableHead className="w-[110px]">
                 <SortButton
                   label="Created"
-                  active={sortKey === "created"}
-                  dir={sortKey === "created" ? sortDir : undefined}
-                  onClick={() => toggleSort("created")}
+                  {...sortInfo("created")}
+                  onClick={(multi) => toggleSort("created", multi)}
                 />
               </TableHead>
               <TableHead className="w-[90px] text-right">Actions</TableHead>
