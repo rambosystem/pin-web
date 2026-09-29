@@ -12,6 +12,7 @@ import {
   RefreshCw,
   Search,
   Sparkles,
+  TerminalSquare,
   UserRound,
   X,
 } from "lucide-react";
@@ -41,6 +42,7 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { TranslatedText } from "@/components/TranslatedText";
 import { patchCachedPin } from "@/hooks/usePins";
 import { formatFileSize } from "@/lib/utils";
+import { buildProcessPinPrompt, openInClaudeCode } from "@/lib/claudeLink";
 import { usePinDetail } from "@/hooks/usePinDetail";
 
 async function copyText(text: string): Promise<boolean> {
@@ -499,6 +501,16 @@ export function PinDetail() {
               : analysis && Object.values(analysis).some((v) => v.trim())
                 ? "Re-analyze"
                 : "Analyze"}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => openInClaudeCode(buildProcessPinPrompt(data, analysis, labels))}
+            disabled={analyzeBusy}
+            title="在 Claude Code 中用 process-pin 技能处理这个 PIN（打开 Jira 工作区，提示词已预填）"
+          >
+            <TerminalSquare />
+            Open in Claude Code
           </Button>
         </div>
       </div>

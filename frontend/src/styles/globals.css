@@ -70,3 +70,22 @@ pre.code-block {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
 }
+
+/* Typewriter caret for streamed LLM analysis: an inline bar after the last
+   rendered Markdown node (or the last list item), blinking slowly. */
+@keyframes typing-caret-blink {
+  0%, 60% { opacity: 1; }
+  61%, 100% { opacity: 0.15; }
+}
+.typing-caret .prose > :last-child:not(ul):not(ol)::after,
+.typing-caret .prose > :is(ul, ol):last-child > li:last-child::after {
+  content: "";
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: hsl(var(--primary));
+  border-radius: 1px;
+  animation: typing-caret-blink 1s steps(1) infinite;
+}
