@@ -31,6 +31,12 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from lib.atlassian import basic_auth, jira_api_v3_url  # noqa: E402
+from lib.domain import (  # noqa: E402
+    DOMAIN_CONTEXT_EN,
+    PROMPT_VERSION,
+    analysis_domain_block,
+    translate_system_prompt,
+)
 from lib.env import load_dotenv  # noqa: E402
 from lib.http import request_json, request_raw, ssl_context  # noqa: E402
 from lib.jira_forms import (  # noqa: E402
@@ -85,7 +91,8 @@ def _coerce_field_text(val: Any) -> str:
     return str(val).strip()
 
 ANALYZE_SYSTEM_PROMPT = (
-    "你是资深产品需求评审专家，为 PIN（Product Incoming Need）工单做结构化分析，供产品/技术评审快速决策。"
+    "你是 Pacvue（零售媒体广告 SaaS）的资深产品需求评审专家，为 PIN（Product Incoming Need）工单做结构化分析，供产品/技术评审快速决策。"
+    + analysis_domain_block() +
     "输入包含 Jira issue 的 summary/description，以及（若有）已清洗的 Feature Request Intake Form 需求正文。"
     "有表单时，以表单【问题】【需求详情】【业务目标】作为诉求与口径的主依据；但 description 中独有的具体事实（客户名、数量、频率、复现场景、链接、数据）仍须照常采纳，不得因表单优先而丢弃。无表单时基于 summary/description 分析。"
     "请只输出 JSON："
@@ -120,7 +127,8 @@ AI_DRAFT_SYSTEM_PROMPT = (
     "instruction is written in Chinese or explicitly asks for a Chinese reply. "
     "Output plain text only — no markdown headings, no code fences, no JSON. "
     "Keep it focused and actionable; avoid restating context the reader already "
-    "sees in the ticket."
+    "sees in the ticket. "
+    + DOMAIN_CONTEXT_EN
 )
 
 ASSESSMENT_EXPLAIN_SYSTEM_PROMPT = (
@@ -136,7 +144,8 @@ ASSESSMENT_EXPLAIN_SYSTEM_PROMPT = (
     "simply state the assessment to the reporter. Do not invent specifics that "
     "are not supported. Professional and concise; match the language the "
     "discussion predominantly uses. Output plain text only: no markdown, no "
-    "headings, no preamble, no surrounding quotes."
+    "headings, no preamble, no surrounding quotes. "
+    + DOMAIN_CONTEXT_EN
 )
 
 load_dotenv(SCRIPT_DIR / ".env")
@@ -1916,7 +1925,8 @@ _TRANSLATE_INFLIGHT_LOCK = threading.Lock()
 
 
 def _text_hash(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+    # Prompt version is part of the hash so a prompt change re-translates everything lazily.
+    return hashlib.sha256(f"{PROMPT_VERSION}\x00{text}".encode("utf-8")).hexdigest()[:12]
 
 
 def _translation_lock(pin_key: str, field: str) -> threading.Lock:
@@ -1935,14 +1945,11 @@ def _cached_translation(pin_key: str, field: str, text: str) -> str | None:
     if not existing:
         return None
     stored_hash = (entry.get("translation_hashes") or {}).get(field)
-    if stored_hash:
-        return existing if stored_hash == _text_hash(text) else None
-    # Legacy entry (no hash). Old translations were produced with max_tokens=1000
-    # and long texts got cut off; a Chinese rendering that is implausibly short
-    # relative to the source is almost certainly truncated => re-translate.
-    if len(text) > 1500 and len(existing) < 0.2 * len(text):
-        return None
-    return existing
+    # Entries without a hash predate the domain-aware prompt (and the 1000-token
+    # truncation fix): treat them as stale so they are redone on next view.
+    if stored_hash and stored_hash == _text_hash(text):
+        return existing
+    return None
 
 
 def _translate(text: str, to: str, pin_key: str, field: str) -> dict[str, Any]:
@@ -1963,13 +1970,9 @@ def _translate(text: str, to: str, pin_key: str, field: str) -> dict[str, Any]:
         if existing:
             return {"translated": existing, "cached": True}
 
-    lang_map = {"zh": "Simplified Chinese", "en": "English"}
+    lang_map = {"zh": "简体中文", "en": "英文"}
     target_lang = lang_map.get(to, to)
-    system = (
-        f"You are a Pacvue Ads Product Manager, you need to translate the user's text into {target_lang}. "
-        "Translate the complete text; never summarise or omit parts. "
-        "Output only the translated text — no explanations, no notes, no markdown."
-    )
+    system = translate_system_prompt(target_lang)
     model = os.environ.get("TRANSLATE_LLM_MODEL", DEFAULT_TRANSLATE_MODEL)
 
     def call_llm() -> tuple[str, bool]:
