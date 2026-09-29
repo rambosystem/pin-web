@@ -10,7 +10,11 @@ import type { PinAnalysisFields, PinAnalysisLabels, PinSummary } from "@/api/typ
  * The folder is the Jira workspace that holds the `process-pin` skill. It is a
  * per-machine path, so it can be overridden via localStorage.
  */
-const DEFAULT_FOLDER = "C:\\Workspace\\Jira";
+// Forward slashes + upper-case drive letter on purpose: Claude Code keys its
+// workspace-trust records by the exact path string, and this is the form the
+// existing trusted entry uses. The backslash form gets normalised to a
+// lower-case drive letter and is treated as a different, untrusted workspace.
+const DEFAULT_FOLDER = "C:/Workspace/Jira";
 const FOLDER_STORAGE_KEY = "pin-web:claude-code-folder";
 const PROMPT_MAX = 14000;
 
