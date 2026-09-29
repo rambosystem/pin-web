@@ -38,7 +38,7 @@ function uniqueValues(items: PinSummary[], pick: (p: PinSummary) => string) {
   return Array.from(set).sort();
 }
 
-type SortKey = "key" | "status" | "urgency" | "reporter" | "created";
+type SortKey = "key" | "status" | "urgency" | "statusUrgency" | "reporter" | "created";
 type SortDir = "asc" | "desc";
 
 const URGENCY_RANK: Record<string, number> = {
@@ -67,6 +67,11 @@ function keyNum(k: string): number {
 }
 
 function compareBy(a: PinSummary, b: PinSummary, key: SortKey): number {
+  if (key === "statusUrgency") {
+    return (
+      compareBy(a, b, "status") || compareBy(a, b, "urgency")
+    );
+  }
   if (key === "urgency") {
     return (URGENCY_RANK[a.urgency] ?? 0) - (URGENCY_RANK[b.urgency] ?? 0);
   }
@@ -160,7 +165,7 @@ export function PinList() {
     arr.sort((a, b) => {
       const primary = compareBy(a, b, sortKey);
       if (primary !== 0) return sortDir === "desc" ? -primary : primary;
-      if (sortKey !== "urgency") {
+      if (sortKey !== "urgency" && sortKey !== "statusUrgency") {
         const u = compareBy(a, b, "urgency");
         if (u !== 0) return -u;
       }
@@ -241,6 +246,19 @@ export function PinList() {
                 Reset
               </Button>
             )}
+            <Button
+              variant={sortKey === "statusUrgency" ? "secondary" : "outline"}
+              size="sm"
+              onClick={() => toggleSort("statusUrgency")}
+            >
+              Status + Urgency
+              {sortKey === "statusUrgency" &&
+                (sortDir === "asc" ? (
+                  <ArrowUp className="h-3.5 w-3.5" />
+                ) : (
+                  <ArrowDown className="h-3.5 w-3.5" />
+                ))}
+            </Button>
             <div className="ml-auto text-xs text-muted-foreground">
               {filtered.length} / {items.length}
             </div>
