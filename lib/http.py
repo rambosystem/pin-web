@@ -20,6 +20,9 @@ DEFAULT_TIMEOUT = 60.0
 # host occasionally black-hole a brand-new connection; a short handshake
 # timeout plus one retry turns a 60 s stall into a few seconds.
 CONNECT_TIMEOUT = float(os.environ.get("HTTP_CONNECT_TIMEOUT", "12"))
+# Log outbound calls slower than this (seconds) with phase details, so network
+# stalls are visible in the service log.
+SLOW_LOG_SECONDS = float(os.environ.get("HTTP_SLOW_LOG_SECONDS", "5"))
 
 _SSL_CTX_LOCK = threading.Lock()
 _SSL_CTX_CACHE: dict[bool, ssl.SSLContext] = {}
@@ -90,12 +93,23 @@ def _new_connection(scheme: str, host: str, port: int, insecure_env_var: str | N
             )
         else:
             conn = http.client.HTTPConnection(host, port, timeout=connect_timeout)
+        t0 = time.time()
         try:
             conn.connect()
         except (OSError, ssl.SSLError) as exc:  # socket.timeout is an OSError
             last_exc = exc
+            print(f"[http] connect to {host}:{port} failed after {time.time() - t0:.1f}s "
+                  f"(attempt {_attempt + 1}): {exc!r}", flush=True)
             _discard(conn)
             continue
+        dt = time.time() - t0
+        if dt > SLOW_LOG_SECONDS:
+            peer = ""
+            try:
+                peer = str(conn.sock.getpeername()[0]) if conn.sock else ""
+            except OSError:
+                pass
+            print(f"[http] slow connect to {host}:{port} ({peer}): {dt:.1f}s", flush=True)
         conn.timeout = timeout
         if conn.sock is not None:
             conn.sock.settimeout(timeout)
@@ -178,11 +192,15 @@ def request_raw(
         last_exc: Exception | None = None
         for attempt in range(2):
             conn, reused = _acquire(scheme, host, port, insecure_env_var, timeout)
+            t0 = time.time()
             try:
                 conn.request(method, path, body=body, headers=hdrs)
                 resp = conn.getresponse()
+                t_first = time.time() - t0
                 raw = resp.read()
             except _RETRYABLE as exc:
+                print(f"[http] {method} {host}{path[:60]} failed after {time.time() - t0:.1f}s "
+                      f"(reused={reused}): {exc!r}", flush=True)
                 _discard(conn)
                 last_exc = exc
                 # Only retry when the failure could be a stale pooled socket.
@@ -192,6 +210,10 @@ def request_raw(
             except Exception:
                 _discard(conn)
                 raise
+            total = time.time() - t0
+            if total > SLOW_LOG_SECONDS:
+                print(f"[http] slow {method} {host}{path[:60]}: first-byte {t_first:.1f}s, "
+                      f"total {total:.1f}s, {len(raw)} bytes, reused={reused}", flush=True)
             if resp.will_close:
                 _discard(conn)
             else:
