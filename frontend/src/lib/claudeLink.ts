@@ -10,11 +10,15 @@ import type { PinAnalysisFields, PinAnalysisLabels, PinSummary } from "@/api/typ
  * The folder is the Jira workspace that holds the `process-pin` skill. It is a
  * per-machine path, so it can be overridden via localStorage.
  */
-// Forward slashes + upper-case drive letter on purpose: Claude Code keys its
-// workspace-trust records by the exact path string, and this is the form the
-// existing trusted entry uses. The backslash form gets normalised to a
-// lower-case drive letter and is treated as a different, untrusted workspace.
-const DEFAULT_FOLDER = "C:/Workspace/Jira";
+// Empty by default: in Claude Desktop 2.9939 a folder supplied by an external
+// deep link always triggers a "Trust this workspace?" dialog whose approval is
+// never honoured on the next launch, and the session then starts in a scratch
+// workspace ("No folder") anyway. Picking the folder from the composer's
+// folder chip (recent list) passes the trust check without any dialog, so we
+// only pre-fill the prompt and let the user pick "Jira" there. Set
+// localStorage["pin-web:claude-code-folder"] = "C:/Workspace/Jira" to pass
+// the folder again once the Desktop bug is fixed.
+const DEFAULT_FOLDER = "";
 const FOLDER_STORAGE_KEY = "pin-web:claude-code-folder";
 const PROMPT_MAX = 14000;
 
@@ -76,7 +80,7 @@ export function buildProcessPinPrompt(
 
 export function buildClaudeCodeLink(prompt: string, folder = claudeCodeFolder()): string {
   const params = new URLSearchParams();
-  params.set("folder", folder);
+  if (folder) params.set("folder", folder);
   params.set("q", prompt);
   return `claude://code/new?${params.toString()}`;
 }
