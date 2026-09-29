@@ -1088,6 +1088,7 @@ def _refresh_pin_list(*, wait: bool = True) -> list[dict[str, Any]] | None:
             _PINS_LIST_CACHE.update({"items": items, "ts": now, "error": ""})
         print(f"[pins] list refreshed: {len(items)} items in {now - t0:.1f}s", flush=True)
         _save_pin_list_file(items, now)
+        _prune_pin_cache({p.get("key") for p in items})
         return items
     except Exception as exc:  # noqa: BLE001
         with _PINS_LIST_LOCK:
@@ -1095,6 +1096,22 @@ def _refresh_pin_list(*, wait: bool = True) -> list[dict[str, Any]] | None:
         raise
     finally:
         _PINS_LIST_FETCH_LOCK.release()
+
+
+def _prune_pin_cache(live_keys: set[str]) -> None:
+    """Drop cached translations/analysis/forms for PINs that are no longer in
+    the working list (processed / closed). Skipped when the list is empty so a
+    bad Jira response can never wipe the cache."""
+    if not live_keys:
+        return
+    with _PIN_CACHE_LOCK:
+        gone = [k for k in _PIN_CACHE if k not in live_keys]
+        for k in gone:
+            _PIN_CACHE.pop(k, None)
+    if gone:
+        _save_pin_cache()
+        print(f"[cache] pruned {len(gone)} PIN(s) no longer in the list: {', '.join(sorted(gone)[:10])}"
+              + (" ..." if len(gone) > 10 else ""), flush=True)
 
 
 def _save_pin_list_file(items: list[dict[str, Any]], ts: float) -> None:
