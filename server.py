@@ -1033,11 +1033,11 @@ def _issue_to_pin_summary(issue: dict[str, Any]) -> dict[str, Any]:
 # The Jira search behind /api/pins takes several seconds from the deployment
 # host, and the list page re-requested it on every visit. We keep the last
 # result in memory, serve it instantly, and refresh it in the background when
-# it is older than _PINS_LIST_TTL. A periodic thread keeps it warm so even the
-# first visit after a long idle period is fast. ``?refresh=true`` forces a
+# it is older than _PINS_LIST_TTL. A daily background refresh keeps the cache
+# populated so the first visit after a long idle period is still instant. ``?refresh=true`` forces a
 # synchronous fetch (the Refresh button).
 _PINS_LIST_TTL = float(os.environ.get("PINS_LIST_TTL_SECONDS", "120"))
-_PINS_LIST_WARM_INTERVAL = float(os.environ.get("PINS_LIST_WARM_INTERVAL_SECONDS", "300"))
+_PINS_LIST_WARM_INTERVAL = float(os.environ.get("PINS_LIST_WARM_INTERVAL_SECONDS", str(24 * 3600)))
 _PINS_LIST_CACHE: dict[str, Any] = {"items": None, "ts": 0.0, "error": ""}
 _PINS_LIST_LOCK = threading.Lock()
 _PINS_LIST_FETCH_LOCK = threading.Lock()  # only one Jira search in flight at a time
