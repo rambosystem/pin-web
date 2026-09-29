@@ -487,6 +487,16 @@ export function PinDetail() {
             {formBusy ? "Loading…" : "Reload Form"}
           </Button>
           <Button
+            variant="outline"
+            size="sm"
+            onClick={() => openInClaudeCode(buildProcessPinPrompt(data, analysis, labels))}
+            disabled={analyzeBusy}
+            title="在 Claude Code 中用 process-pin 技能处理这个 PIN（打开 Jira 工作区，提示词已预填）"
+          >
+            <TerminalSquare />
+            Open in Claude Code
+          </Button>
+          <Button
             size="sm"
             onClick={() =>
               void runAnalysis(
@@ -501,16 +511,6 @@ export function PinDetail() {
               : analysis && Object.values(analysis).some((v) => v.trim())
                 ? "Re-analyze"
                 : "Analyze"}
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => openInClaudeCode(buildProcessPinPrompt(data, analysis, labels))}
-            disabled={analyzeBusy}
-            title="在 Claude Code 中用 process-pin 技能处理这个 PIN（打开 Jira 工作区，提示词已预填）"
-          >
-            <TerminalSquare />
-            Open in Claude Code
           </Button>
         </div>
       </div>
