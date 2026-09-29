@@ -38,6 +38,10 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   listPins: (refresh = false) =>
     http<PinListResponse>(`/pins${refresh ? "?refresh=true" : ""}`),
+  weeklyReport: (refresh = false) =>
+    http<{ weeks: { week_start: string; week_end: string; created: number; handled: number }[] }>(
+      `/pins/weekly-report${refresh ? "?refresh=true" : ""}`,
+    ),
   translate: (text: string, pinKey = "", field = "", to = "zh", signal?: AbortSignal) =>
     http<{ translated: string; cached: boolean }>("/translate", {
       method: "POST",

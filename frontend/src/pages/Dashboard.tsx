@@ -1,12 +1,107 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { ExternalLink } from "lucide-react";
+import { Copy, ExternalLink } from "lucide-react";
+import { toast } from "sonner";
 import type { PinSummary } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatCard } from "@/components/StatCard";
 import { DistributionChart } from "@/components/DistributionChart";
 import { usePins } from "@/hooks/usePins";
+import { api } from "@/api/client";
+import { copyText } from "@/lib/utils";
+import { useChartTheme } from "@/lib/highcharts-theme";
+import Highcharts from "highcharts";
+import HighchartsReact from "highcharts-react-official";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+
+type Weekly = Awaited<ReturnType<typeof api.weeklyReport>>;
+
+function WeeklyReport() {
+  const theme = useChartTheme();
+  const [data, setData] = useState<Weekly | null>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    api
+      .weeklyReport()
+      .then(setData)
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+  }, []);
+
+  const last = data?.weeks[data.weeks.length - 1];
+
+  async function copy() {
+    if (!last) return;
+    const md = `上周新增：${last.created}
+已处理：${last.handled}`;
+    if (await copyText(md)) toast.success("Copied");
+    else toast.error("Copy failed — clipboard unavailable");
+  }
+
+  const options = useMemo<Highcharts.Options>(() => {
+    const weeks = data?.weeks ?? [];
+    return {
+      accessibility: { enabled: false },
+      credits: { enabled: false },
+      chart: {
+        type: "line",
+        backgroundColor: "transparent",
+        spacing: [8, 8, 8, 0],
+        style: { fontFamily: "inherit" },
+        height: 224,
+      },
+      title: { text: undefined },
+      legend: { itemStyle: { color: theme.muted, fontWeight: "normal" } },
+      xAxis: {
+        categories: weeks.map((w) => `${w.week_start.slice(5)} ~ ${w.week_end.slice(5)}`),
+        lineColor: theme.border,
+        tickColor: theme.border,
+        labels: { style: { color: theme.muted, fontSize: "11px" } },
+      },
+      yAxis: {
+        title: { text: undefined },
+        gridLineColor: theme.border,
+        gridLineDashStyle: "Dash",
+        labels: { style: { color: theme.muted, fontSize: "11px" } },
+        allowDecimals: false,
+        min: 0,
+      },
+      tooltip: { shared: true, style: { fontSize: "12px" } },
+      plotOptions: {
+        line: { dataLabels: { enabled: true, style: { fontSize: "11px" } } },
+      },
+      series: [
+        { type: "line", name: "Created", data: weeks.map((w) => w.created), color: theme.bar },
+        { type: "line", name: "Handled", data: weeks.map((w) => w.handled), color: "#f59e0b" },
+      ],
+    };
+  }, [data, theme]);
+
+  return (
+    <Card>
+      <CardHeader className="pb-2 flex-row items-center justify-between space-y-0">
+        <CardTitle className="text-sm">PIN Weekly Report (last 4 weeks)</CardTitle>
+        <Button variant="outline" size="sm" onClick={copy} disabled={!last}>
+          <Copy className="h-3.5 w-3.5" /> Copy Markdown
+        </Button>
+      </CardHeader>
+      <CardContent>
+        {error ? (
+          <div className="text-sm text-destructive">{error}</div>
+        ) : data ? (
+          <HighchartsReact
+            highcharts={Highcharts}
+            options={options}
+            containerProps={{ style: { width: "100%" } }}
+          />
+        ) : (
+          <Skeleton className="h-56" />
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 function tally(
   items: PinSummary[],
@@ -83,6 +178,8 @@ export function Dashboard() {
         <StatCard label="Backlog" value={stats.backlog} />
         <StatCard label="High / Critical" value={stats.high} tone="danger" />
       </div>
+
+      <WeeklyReport />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <DistributionChart title="Status" data={statusData} />

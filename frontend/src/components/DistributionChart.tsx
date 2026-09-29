@@ -4,6 +4,17 @@ import HighchartsReact from "highcharts-react-official";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useChartTheme } from "@/lib/highcharts-theme";
 
+const PALETTE = ["#3b82f6", "#14b8a6", "#f59e0b", "#8b5cf6", "#ec4899", "#22c55e", "#06b6d4", "#f97316", "#64748b", "#a855f7"];
+// Fixed colours for well-known values so they stay consistent across charts.
+const NAMED: Record<string, string> = {
+  Critical: "#dc2626",
+  Highest: "#dc2626",
+  High: "#f97316",
+  Medium: "#f59e0b",
+  Low: "#22c55e",
+  Lowest: "#94a3b8",
+};
+
 export function DistributionChart({
   title,
   data,
@@ -60,7 +71,6 @@ export function DistributionChart({
         column: {
           borderRadius: 4,
           borderWidth: 0,
-          color: theme.bar,
           states: { hover: { brightness: -0.05 } },
         },
       },
@@ -68,7 +78,11 @@ export function DistributionChart({
         {
           type: "column",
           name: "Count",
-          data: data.map((d) => d.value),
+          colorByPoint: true,
+          data: data.map((d, i) => ({
+            y: d.value,
+            color: NAMED[d.name] ?? PALETTE[i % PALETTE.length],
+          })),
         },
       ],
     };

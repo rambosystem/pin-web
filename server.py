@@ -897,6 +897,56 @@ def list_pins(refresh: bool = False) -> dict[str, Any]:
     return {"items": items, "cached": True, "age": round(age)}
 
 
+_WEEKLY_CACHE: dict[str, Any] = {"key": "", "ts": 0.0, "data": None}
+_WEEKLY_TTL = 600.0
+
+
+@app.get("/api/pins/weekly-report")
+def pins_weekly_report(refresh: bool = False) -> dict[str, Any]:
+    """Per full calendar week (Mon-Sun) for the last 4 weeks, oldest first:
+    PINs created, and PINs whose status changed (i.e. were handled)."""
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import date, timedelta
+
+    this_monday = date.today() - timedelta(days=date.today().weekday())
+    cache_key = this_monday.isoformat()
+    if (
+        not refresh
+        and _WEEKLY_CACHE["key"] == cache_key
+        and time.time() - _WEEKLY_CACHE["ts"] < _WEEKLY_TTL
+    ):
+        return _WEEKLY_CACHE["data"]
+
+    account_id = _profile().get("account_id") or ""
+    if not account_id:
+        raise HTTPException(500, "account_id missing from profile")
+    who = f'assignee WAS IN ("{account_id}")'
+
+    def count(jql: str) -> int:
+        return len(_jira_search(jql, ["key"], limit=1000))
+
+    def one_week(i: int) -> dict[str, Any]:
+        start = this_monday - timedelta(days=7 * i)
+        end = start + timedelta(days=7)
+        s, e = start.isoformat(), end.isoformat()
+        return {
+            "week_start": s,
+            "week_end": (end - timedelta(days=1)).isoformat(),
+            "created": count(
+                f'project = PIN AND {who} AND created >= "{s}" AND created < "{e}"'
+            ),
+            "handled": count(
+                f'project = PIN AND {who} AND status CHANGED DURING ("{s}", "{e}")'
+            ),
+        }
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        weeks = list(pool.map(one_week, [4, 3, 2, 1]))
+    data = {"weeks": weeks}
+    _WEEKLY_CACHE.update({"key": cache_key, "ts": time.time(), "data": data})
+    return data
+
+
 @app.get("/api/pins/{key}")
 def get_pin(key: str) -> dict[str, Any]:
     issue = _jira_get_issue(key, ["summary", "status", "priority", "description", "created", "attachment", "reporter", "assignee"])
