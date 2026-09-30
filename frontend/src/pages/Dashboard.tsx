@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Copy, ExternalLink } from "lucide-react";
+import { Copy, ExternalLink, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import type { PinSummary } from "@/api/types";
 import { Button } from "@/components/ui/button";
@@ -9,7 +9,7 @@ import { StatCard } from "@/components/StatCard";
 import { DistributionChart } from "@/components/DistributionChart";
 import { usePins } from "@/hooks/usePins";
 import { api } from "@/api/client";
-import { copyText } from "@/lib/utils";
+import { cn, copyText } from "@/lib/utils";
 import { useChartTheme } from "@/lib/highcharts-theme";
 import Highcharts from "highcharts";
 import HighchartsReact from "highcharts-react-official";
@@ -21,12 +21,22 @@ function WeeklyReport() {
   const theme = useChartTheme();
   const [data, setData] = useState<Weekly | null>(null);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function load(refresh = false) {
+    setLoading(true);
+    setError("");
+    try {
+      setData(await api.weeklyReport(refresh));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
 
   useEffect(() => {
-    api
-      .weeklyReport()
-      .then(setData)
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    void load();
   }, []);
 
   const last = data?.weeks[data.weeks.length - 1];
@@ -72,7 +82,7 @@ function WeeklyReport() {
         line: { dataLabels: { enabled: true, style: { fontSize: "11px" } } },
       },
       series: [
-        { type: "line", name: "Created", data: weeks.map((w) => w.created), color: theme.bar },
+        { type: "line", name: "New PIN", data: weeks.map((w) => w.created), color: theme.bar },
         { type: "line", name: "Handled", data: weeks.map((w) => w.handled), color: "#f59e0b" },
       ],
     };
@@ -82,9 +92,20 @@ function WeeklyReport() {
     <Card>
       <CardHeader className="pb-2 flex-row items-center justify-between space-y-0">
         <CardTitle className="text-sm">PIN Weekly Report (last 4 weeks)</CardTitle>
-        <Button variant="outline" size="sm" onClick={copy} disabled={!last}>
-          <Copy className="h-3.5 w-3.5" /> Copy Markdown
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => load(true)}
+            disabled={loading}
+          >
+            <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
+            Refresh
+          </Button>
+          <Button variant="outline" size="sm" onClick={copy} disabled={!last}>
+            <Copy className="h-3.5 w-3.5" /> Copy Markdown
+          </Button>
+        </div>
       </CardHeader>
       <CardContent>
         {error ? (

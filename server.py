@@ -617,7 +617,9 @@ def _format_comment(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _jira_search(jql: str, fields: list[str], limit: int = 200) -> list[dict[str, Any]]:
+def _jira_search(
+    jql: str, fields: list[str], limit: int = 200, expand: str | None = None
+) -> list[dict[str, Any]]:
     """Run a JQL search against Jira REST API v3 and return issue list."""
     base = (_profile().get("base_url") or "").rstrip("/")
     if not base:
@@ -632,7 +634,12 @@ def _jira_search(jql: str, fields: list[str], limit: int = 200) -> list[dict[str
                 "Content-Type": "application/json",
                 "Authorization": f"Basic {_jira_auth()}",
             },
-            data={"jql": jql, "maxResults": limit, "fields": fields},
+            data={
+                "jql": jql,
+                "maxResults": limit,
+                "fields": fields,
+                **({"expand": expand} if expand else {}),
+            },
             insecure_env_var="PIN_REPORT_INSECURE_SSL",
         )
     except HTTPError as exc:
@@ -904,9 +911,19 @@ _WEEKLY_TTL = 600.0
 @app.get("/api/pins/weekly-report")
 def pins_weekly_report(refresh: bool = False) -> dict[str, Any]:
     """Per full calendar week (Mon-Sun) for the last 4 weeks, oldest first:
-    PINs created, and PINs whose status changed (i.e. were handled)."""
+    PINs created, and PINs whose status changed (i.e. were handled).
+
+    "Handled" counts PINs (ever assigned to me) with at least one status
+    change inside the week made by a person. Changes made by an app account
+    (Automation for Jira's "Priority Triage -> Backlog" on every new ticket,
+    auto-reopen when a reporter replies) are ignored, otherwise every new
+    ticket counts as handled the week it was created. The JQL window is
+    widened by a day on each side because ``CHANGED DURING`` treats its end
+    date inclusively; the exact Mon-Sun boundary is applied to the changelog
+    timestamps in server local time (same clock as ``date.today()``).
+    """
     from concurrent.futures import ThreadPoolExecutor
-    from datetime import date, timedelta
+    from datetime import date, datetime, timedelta
 
     this_monday = date.today() - timedelta(days=date.today().weekday())
     cache_key = this_monday.isoformat()
@@ -925,6 +942,30 @@ def pins_weekly_report(refresh: bool = False) -> dict[str, Any]:
     def count(jql: str) -> int:
         return len(_jira_search(jql, ["key"], limit=1000))
 
+    def handled_by_person(issue: dict[str, Any], start: date, end: date) -> bool:
+        for h in (issue.get("changelog") or {}).get("histories") or []:
+            if (h.get("author") or {}).get("accountType") == "app":
+                continue
+            if not any(c.get("field") == "status" for c in h.get("items") or []):
+                continue
+            try:
+                when = datetime.strptime(h["created"], "%Y-%m-%dT%H:%M:%S.%f%z")
+            except (KeyError, ValueError):
+                continue
+            if start <= when.astimezone().date() < end:
+                return True
+        return False
+
+    def count_handled(start: date, end: date) -> int:
+        s, e = (start - timedelta(days=1)).isoformat(), (end + timedelta(days=1)).isoformat()
+        issues = _jira_search(
+            f'project = PIN AND {who} AND status CHANGED DURING ("{s}", "{e}")',
+            ["key"],
+            limit=1000,
+            expand="changelog",
+        )
+        return sum(1 for it in issues if handled_by_person(it, start, end))
+
     def one_week(i: int) -> dict[str, Any]:
         start = this_monday - timedelta(days=7 * i)
         end = start + timedelta(days=7)
@@ -935,9 +976,7 @@ def pins_weekly_report(refresh: bool = False) -> dict[str, Any]:
             "created": count(
                 f'project = PIN AND {who} AND created >= "{s}" AND created < "{e}"'
             ),
-            "handled": count(
-                f'project = PIN AND {who} AND status CHANGED DURING ("{s}", "{e}")'
-            ),
+            "handled": count_handled(start, end),
         }
 
     with ThreadPoolExecutor(max_workers=4) as pool:
