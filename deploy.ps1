@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  One-click deploy: local push -> server git pull -> pinctl build (rebuild frontend + restart service).
+  One-click deploy: local push (origin + prod remote over ssh) -> pinctl build (rebuild frontend + restart service).
 
 .DESCRIPTION
   Run locally on Windows. Requires an "ubuntu-server" Host alias in your
@@ -76,9 +76,15 @@ $branch = (git rev-parse --abbrev-ref HEAD).Trim()
 git push origin $branch
 Ok "Pushed branch: $branch"
 
-# 3) SSH to the server: pull + build + restart.
-Step "Pulling and building on server ($SshHost)"
-$remoteCmd = "set -e; cd $RemoteDir; git pull --ff-only; ./pinctl build"
+# 3) Push straight to the server (its checkout has receive.denyCurrentBranch=updateInstead),
+#    so the server never has to reach github.com (which often times out).
+Step "Pushing to server ($SshHost)"
+git push prod $branch
+Ok "Server updated"
+
+# 4) SSH to the server: build + restart.
+Step "Building on server ($SshHost)"
+$remoteCmd = "set -e; cd $RemoteDir; ./pinctl build"
 ssh $SshHost $remoteCmd
 if ($LASTEXITCODE -ne 0) {
   Write-Host "`nDeploy failed (remote exit code $LASTEXITCODE)." -ForegroundColor Red
