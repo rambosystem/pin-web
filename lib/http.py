@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import http.client
 import json
 import os
@@ -177,7 +178,10 @@ def request_raw(
     redirects. A connection that turns out to be stale (server closed it while
     idle) is discarded and the request retried once on a fresh connection.
     """
-    hdrs = {"Accept-Encoding": "identity"}
+    # gzip: Jira JSON (search results, changelogs) shrinks 10-20x, which
+    # matters on the deployment host's slow cross-border link. Decompressed
+    # below so callers always see plain bytes.
+    hdrs = {"Accept-Encoding": "gzip"}
     hdrs.update(headers or {})
 
     for _redirect in range(4):
@@ -198,6 +202,9 @@ def request_raw(
                 resp = conn.getresponse()
                 t_first = time.time() - t0
                 raw = resp.read()
+                if (resp.getheader("Content-Encoding") or "").lower() == "gzip":
+                    raw = gzip.decompress(raw)
+                    del resp.headers["Content-Encoding"]
             except _RETRYABLE as exc:
                 print(f"[http] {method} {host}{path[:60]} failed after {time.time() - t0:.1f}s "
                       f"(reused={reused}): {exc!r}", flush=True)

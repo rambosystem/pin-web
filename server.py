@@ -939,8 +939,23 @@ def pins_weekly_report(refresh: bool = False) -> dict[str, Any]:
         raise HTTPException(500, "account_id missing from profile")
     who = f'assignee WAS IN ("{account_id}")'
 
-    def count(jql: str) -> int:
-        return len(_jira_search(jql, ["key"], limit=1000))
+    first_monday = this_monday - timedelta(days=7 * 4)
+
+    def fetch_created() -> list[date]:
+        """Creation dates (server local) of my PINs created in the 4 weeks;
+        one small request instead of one per week."""
+        jql = (
+            f'project = PIN AND {who} AND created >= "{first_monday.isoformat()}" '
+            f'AND created < "{this_monday.isoformat()}"'
+        )
+        out: list[date] = []
+        for it in _jira_search(jql, ["created"], limit=1000):
+            try:
+                when = datetime.strptime(it["fields"]["created"], "%Y-%m-%dT%H:%M:%S.%f%z")
+            except (KeyError, ValueError):
+                continue
+            out.append(when.astimezone().date())
+        return out
 
     def handled_by_person(issue: dict[str, Any], start: date, end: date) -> bool:
         for h in (issue.get("changelog") or {}).get("histories") or []:
@@ -961,8 +976,7 @@ def pins_weekly_report(refresh: bool = False) -> dict[str, Any]:
         request keeps the (large) changelog payload off the flaky link as
         much as possible; per-week concurrent copies of it stalled mid-body
         on the deployment host. Retried once because a stall is transient."""
-        first = this_monday - timedelta(days=7 * 4)
-        s = (first - timedelta(days=1)).isoformat()
+        s = (first_monday - timedelta(days=1)).isoformat()
         e = (this_monday + timedelta(days=1)).isoformat()
         jql = f'project = PIN AND {who} AND status CHANGED DURING ("{s}", "{e}")'
         for attempt in range(2):
@@ -974,26 +988,21 @@ def pins_weekly_report(refresh: bool = False) -> dict[str, Any]:
                 print(f"[weekly] changelog search stalled, retrying: {exc!r}", flush=True)
         return []  # unreachable
 
-    def one_week(i: int) -> dict[str, Any]:
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        changelog_future = pool.submit(fetch_changelogs)
+        created_dates = fetch_created()
+        issues = changelog_future.result()
+
+    weeks = []
+    for i in [4, 3, 2, 1]:
         start = this_monday - timedelta(days=7 * i)
         end = start + timedelta(days=7)
-        s, e = start.isoformat(), end.isoformat()
-        return {
-            "week_start": s,
+        weeks.append({
+            "week_start": start.isoformat(),
             "week_end": (end - timedelta(days=1)).isoformat(),
-            "created": count(
-                f'project = PIN AND {who} AND created >= "{s}" AND created < "{e}"'
-            ),
-        }
-
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        changelog_future = pool.submit(fetch_changelogs)
-        weeks = list(pool.map(one_week, [4, 3, 2, 1]))
-        issues = changelog_future.result()
-    for w in weeks:
-        start = date.fromisoformat(w["week_start"])
-        end = start + timedelta(days=7)
-        w["handled"] = sum(1 for it in issues if handled_by_person(it, start, end))
+            "created": sum(1 for d in created_dates if start <= d < end),
+            "handled": sum(1 for it in issues if handled_by_person(it, start, end)),
+        })
     data = {"weeks": weeks}
     _WEEKLY_CACHE.update({"key": cache_key, "ts": time.time(), "data": data})
     return data
