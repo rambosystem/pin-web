@@ -13,10 +13,13 @@ from typing import Any
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
 
-# Default per-request timeout (seconds) for outbound calls. Jira and the LLM
-# API can occasionally hang; without a timeout a stuck call pins a worker
-# thread forever and the whole app slows down.
-DEFAULT_TIMEOUT = 60.0
+# Default per-request read timeout (seconds) for outbound calls: Jira and the
+# Atlassian Forms API. A healthy Jira call answers in 1-3 s; when the
+# cross-border link from the deployment host stalls, the request never
+# answers at all, so waiting 60 s only made the UI hang for a minute. 20 s
+# fails fast and lets the page retry. LLM calls pass their own longer
+# timeout (LLM_TIMEOUT_SECONDS) explicitly.
+DEFAULT_TIMEOUT = float(os.environ.get("HTTP_READ_TIMEOUT", "20"))
 # TCP connect + TLS handshake budget. Cross-border links from the deployment
 # host occasionally black-hole a brand-new connection; a short handshake
 # timeout plus one retry turns a 60 s stall into a few seconds.
