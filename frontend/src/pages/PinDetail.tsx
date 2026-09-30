@@ -73,6 +73,15 @@ export function PinDetail() {
   const [assigneeSearchBusy, setAssigneeSearchBusy] = useState(false);
   const [assigneeSaving, setAssigneeSaving] = useState(false);
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!lightboxSrc) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setLightboxSrc(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [lightboxSrc]);
   const [copied, setCopied] = useState(false);
 
   const [translationVersion, setTranslationVersion] = useState(0);
