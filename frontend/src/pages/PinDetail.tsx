@@ -397,6 +397,11 @@ export function PinDetail() {
             >
               <ExternalLink className="h-3.5 w-3.5" /> Open in Jira
             </a>
+            {data.created && (
+              <span className="text-xs text-muted-foreground" title="Created">
+                Created {new Date(data.created).toLocaleString()}
+              </span>
+            )}
           </div>
           {data.summary && (
             <div className="text-sm text-foreground max-w-3xl">
